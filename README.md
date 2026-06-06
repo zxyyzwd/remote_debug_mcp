@@ -12,7 +12,12 @@
 ## 安装
 
 ```bash
-# 虚拟环境（推荐）
+# 克隆到 ~/.config 目录（推荐，与配置文件路径一致）
+mkdir -p ~/.config
+git clone https://github.com/zxyyzwd/remote_debug_mcp.git ~/.config/remote_debug_mcp
+cd ~/.config/remote_debug_mcp
+
+# 虚拟环境安装
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 
 # 或直接安装
@@ -63,7 +68,7 @@ pip install -e .
 claude mcp add remote-debug python3 -- -m remote_debug_mcp
 ```
 
-> 使用虚拟环境时，将 `python3` 替换为 `.venv/bin/python3` 的绝对路径。
+> 使用虚拟环境时，将 `python3` 替换为 `~/.config/remote_debug_mcp/.venv/bin/python3`。
 
 配置后重启客户端即可使用。
 
