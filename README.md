@@ -1,0 +1,160 @@
+# Remote Debug MCP
+
+基于 MCP (Model Context Protocol) 的远程调试服务器，支持 **SSH** 和 **Telnet** 后台持久化连接，专为远程串口调试和 Android/Linux 设备管理设计。
+
+## 功能
+
+- **SSH** — 持续后台连接远程服务器/Windows PC，支持命令执行、SCP/SFTP 文件传输、自动重连
+- **Telnet** — 持续后台连接，支持命令执行、数据收发、串口数据监听
+- **com2tcp** — 一键桥接 Windows COM 串口到 TCP Telnet，远程调试串口设备
+- **配置文件** — YAML 文件预设连接参数，一键连接
+
+## 安装
+
+```bash
+pip install -e .
+# 或从 wheel 安装
+pip install dist/*.whl
+```
+
+依赖：Python ≥ 3.10，`pexpect`，`mcp`
+
+## 配置 OpenCode
+
+在 `~/.config/opencode/opencode.jsonc` 中添加：
+
+```jsonc
+{
+  "mcp": {
+    "remote-debug": {
+      "type": "local",
+      "command": ["python3", "-m", "remote_debug_mcp"],
+      "enabled": true,
+      "timeout": 60000
+    }
+  }
+}
+```
+
+重启 OpenCode 即可使用。
+
+## 快速开始
+
+### 方式一：命令行参数
+
+```
+ssh_connect → session_id: "my-pc", host: "192.168.1.16", username: "admin", password: "xxx"
+ssh_execute → session_id: "my-pc", command: "whoami"
+```
+
+### 方式二：配置文件
+
+编辑 `config.yaml`：
+
+```yaml
+connections:
+  - name: "office-pc"
+    type: ssh
+    host: "192.168.1.16"
+    username: "zxyyz"
+    password: "kaixin123"
+
+  - name: "serial-com4"
+    type: com2tcp
+    ssh: "office-pc"
+    com_port: "COM4"
+    telnet_port: 5200
+    baud: 115200
+```
+
+一键使用：
+
+```
+load_config → path: "config.yaml"
+connect_from_config → config_name: "office-pc"
+```
+
+## com2tcp 串口调试工作流
+
+```
+┌──────────┐  SSH (PowerShell)   ┌──────────────────┐
+│  MCP     │ ──────────────────▶ │  Windows PC       │
+│  Server  │                     │  COM4 → :5200     │
+│          │  Telnet :5200       │       ↑           │
+│          │ ◀────────────────── │  串口设备          │
+└──────────┘                     └──────────────────┘
+```
+
+```
+1. load_config → path: "config.yaml"
+2. setup_com2tcp_from_config → config_name: "serial-com4"
+3. telnet_connect → host: "192.168.1.16", port: 5200
+4. telnet_execute → command: "ls"
+5. telnet_listen → duration: 10
+```
+
+## 工具参考
+
+### SSH（8 个）
+
+| 工具 | 说明 |
+|------|------|
+| `ssh_connect` | 密码连接，后台持久化 |
+| `ssh_connect_key` | 私钥连接 |
+| `ssh_execute` | 执行命令（自动适配 bash/PowerShell） |
+| `ssh_upload` | SCP 上传（优先 SCP → SFTP → Base64） |
+| `ssh_download` | SCP 下载（优先 SCP → SFTP → SSH Base64） |
+| `ssh_upload_binary` | Base64 上传（通用，Windows 兼容） |
+| `ssh_disconnect` | 关闭会话 |
+| `ssh_list` | 列出所有 SSH 会话 |
+
+### Telnet（8 个）
+
+| 工具 | 说明 |
+|------|------|
+| `telnet_connect` | 连接（可选用户名/密码，可配缓冲区） |
+| `telnet_execute` | 发送命令并等待响应 |
+| `telnet_send` | 发送原始数据（不等待） |
+| `telnet_listen` | 监听指定秒数，返回新数据 |
+| `telnet_read` | 读取缓冲区新数据 |
+| `telnet_read_all` | 读取并清空全部缓冲区 |
+| `telnet_disconnect` | 关闭会话 |
+| `telnet_list` | 列出所有 Telnet 会话 |
+
+### 配置（4 个）
+
+| 工具 | 说明 |
+|------|------|
+| `load_config` | 加载 YAML 配置文件 |
+| `list_connections` | 列出配置中的所有连接 |
+| `connect_from_config` | 按名称一键 SSH 连接 |
+| `setup_com2tcp_from_config` | 按名称一键 com2tcp 部署 |
+
+### 通用（2 个）
+
+| 工具 | 说明 |
+|------|------|
+| `setup_com2tcp` | 手动 com2tcp 工作流 |
+| `list_sessions` | 列出所有 SSH + Telnet 会话 |
+
+## 架构
+
+```
+src/remote_debug_mcp/
+├── server.py         # MCP 服务端：22 个工具定义 + 分发
+├── sessions.py       # SSH/Telnet 会话生命周期管理
+├── config_loader.py  # YAML 配置文件加载
+├── com2tcp.exe       # com2tcp 桥接工具（随包发布）
+├── __init__.py
+└── __main__.py
+```
+
+## 技术要点
+
+- SSH 使用 `pexpect.spawn('ssh', ...)` 直连，**不使用 pxssh**（避免 Windows 提示符兼容问题）
+- 命令输出通过 `echo` 唯一标记分隔，不依赖 shell 提示符
+- Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
+- Telnet 缓冲区 64KB（可配），FIFO 滚动淘汰，支持 utf-8/base64/hex 编码
+- 自动重连：指数退避，默认最多 3 次
+
+详细设计参见 [DESIGN.md](DESIGN.md)

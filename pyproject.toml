@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-debug-mcp"
+version = "0.1.0"
+description = "MCP server for remote debugging via SSH and Telnet with persistent background connections"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+keywords = ["mcp", "ssh", "telnet", "remote-debug", "serial", "android", "debugging"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "pexpect>=4.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/user/remote-debug-mcp"
+Repository = "https://github.com/user/remote-debug-mcp"
+Issues = "https://github.com/user/remote-debug-mcp/issues"
+
+[project.scripts]
+remote-debug-mcp = "remote_debug_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_debug_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/remote_debug_mcp/com2tcp.exe" = "remote_debug_mcp/com2tcp.exe"

@@ -1,0 +1,17 @@
+# 远程调试连接配置文件（示例）
+# 复制为 config.yaml 并填入真实参数
+
+connections:
+  - name: "my-pc"
+    type: ssh
+    host: "192.168.1.100"
+    port: 22
+    username: "your-username"
+    password: "your-password"
+
+  - name: "my-serial"
+    type: com2tcp
+    ssh: "my-pc"
+    com_port: "COM4"
+    telnet_port: 5200
+    baud: 115200
