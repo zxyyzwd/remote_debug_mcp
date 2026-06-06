@@ -73,7 +73,12 @@ claude mcp add remote-debug python3 -- -m remote_debug_mcp
 
 ### 方式一：YAML 配置文件（推荐）
 
-复制 `config.example.yaml` 为 `config.yaml`，填入真实参数：
+复制项目根目录的 `config.example.yaml` 为 `config.yaml`，填入真实参数。加载时默认搜索以下路径：
+
+- `./config.yaml`（当前工作目录）
+- `~/.config/remote-debug-mcp/config.yaml`（用户全局配置）
+
+如果使用 `pip install -e .`（可编辑模式），`config.example.yaml` 即仓库根目录下的文件。
 
 ```yaml
 connections:
