@@ -38,3 +38,4 @@ packages = ["src/remote_debug_mcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/remote_debug_mcp/com2tcp.exe" = "remote_debug_mcp/com2tcp.exe"
+"src/remote_debug_mcp/config.example.yaml" = "remote_debug_mcp/config.example.yaml"

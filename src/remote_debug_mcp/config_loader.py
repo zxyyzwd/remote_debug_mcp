@@ -119,13 +119,26 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     search_paths = [
         path,
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", path),
-        os.path.join(os.path.expanduser("~"), ".config", "remote-debug-mcp", "config.yaml"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), path),
+        os.path.join(os.path.expanduser("~"), ".config", "remote-debug-mcp", path),
     ]
     for p in search_paths:
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as f:
                 return _parse_yaml_simple(f.read())
     raise FileNotFoundError(f"Config file not found: {path} (searched: {search_paths})")
+
+
+def example_config_path() -> str:
+    """返回 config.example.yaml 的路径（用于参考/复制）。"""
+    search = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.yaml"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "config.example.yaml"),
+    ]
+    for p in search:
+        if os.path.exists(p):
+            return p
+    return "config.example.yaml (not found, check repo)"
 
 
 _config: Optional[AppConfig] = None
