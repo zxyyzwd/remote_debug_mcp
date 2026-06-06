@@ -19,9 +19,19 @@ pip install dist/*.whl
 
 依赖：Python ≥ 3.10，`pexpect`，`mcp`
 
-## 配置 OpenCode
+## 配置客户端
 
-在 `~/.config/opencode/opencode.jsonc` 中添加：
+### 安装
+
+```bash
+pip install -e .
+# 或虚拟环境（推荐）
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+```
+
+### OpenCode
+
+`~/.config/opencode/opencode.jsonc`：
 
 ```jsonc
 {
@@ -36,7 +46,45 @@ pip install dist/*.whl
 }
 ```
 
-重启 OpenCode 即可使用。
+### Claude Code
+
+`~/.claude/mcp.json`（全局）或项目根目录 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "remote-debug": {
+      "command": "python3",
+      "args": ["-m", "remote_debug_mcp"]
+    }
+  }
+}
+```
+
+也可用 `claude mcp add` 添加：
+
+```bash
+claude mcp add remote-debug python3 -- -m remote_debug_mcp
+```
+
+### Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) 或 `%APPDATA%\Claude\claude_desktop_config.json` (Windows)：
+
+```json
+{
+  "mcpServers": {
+    "remote-debug": {
+      "command": "python3",
+      "args": ["-m", "remote_debug_mcp"]
+    }
+  }
+}
+```
+
+> 如果使用虚拟环境，将 `python3` 替换为 `.venv/bin/python3` 的绝对路径。
+
+配置后重启对应客户端即可使用。
 
 ## 快速开始
 
