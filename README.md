@@ -12,22 +12,16 @@
 ## 安装
 
 ```bash
+# 虚拟环境（推荐）
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+
+# 或直接安装
 pip install -e .
-# 或从 wheel 安装
-pip install dist/*.whl
 ```
 
-依赖：Python ≥ 3.10，`pexpect`，`mcp`
+依赖：Python ≥ 3.10 · pexpect · mcp
 
 ## 配置客户端
-
-### 安装
-
-```bash
-pip install -e .
-# 或虚拟环境（推荐）
-python3 -m venv .venv && source .venv/bin/activate && pip install -e .
-```
 
 ### OpenCode
 
@@ -63,48 +57,67 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 }
 ```
 
-也可用 `claude mcp add` 添加：
+也可用命令行添加：
 
 ```bash
 claude mcp add remote-debug python3 -- -m remote_debug_mcp
 ```
 
-配置后重启对应客户端即可使用。
+> 使用虚拟环境时，将 `python3` 替换为 `.venv/bin/python3` 的绝对路径。
 
-## 快速开始
+配置后重启客户端即可使用。
 
-### 方式一：命令行参数
+## 连接配置
 
-```
-ssh_connect → session_id: "my-pc", host: "192.168.1.16", username: "admin", password: "xxx"
-ssh_execute → session_id: "my-pc", command: "whoami"
-```
+支持两种方式提供 SSH / Telnet / COM 端口参数。
 
-### 方式二：配置文件
+### 方式一：YAML 配置文件（推荐）
 
-编辑 `config.yaml`：
+复制 `config.example.yaml` 为 `config.yaml`，填入真实参数：
 
 ```yaml
 connections:
-  - name: "office-pc"
+  # ── SSH 连接 ──────────────────────
+  - name: "office-pc"          # 连接名称，后续引用用
+    type: ssh
+    host: "192.168.1.16"       # 远程 IP
+    port: 22                   # SSH 端口
+    username: "zxyyz"          # 用户名
+    password: "kaixin123"      # 密码（明文，仅本地使用）
+
+  - name: "office-pc-key"      # 密钥认证
     type: ssh
     host: "192.168.1.16"
-    username: "zxyyz"
-    password: "kaixin123"
+    username: "admin"
+    key_file: "/home/me/.ssh/id_rsa"
 
-  - name: "serial-com4"
+  # ── 串口映射 ──────────────────────
+  - name: "serial-com4"        # com2tcp 桥接配置
     type: com2tcp
-    ssh: "office-pc"
-    com_port: "COM4"
-    telnet_port: 5200
-    baud: 115200
+    ssh: "office-pc"           # 引用上面的 SSH 连接名
+    com_port: "COM4"           # Windows COM 口
+    telnet_port: 5200          # 暴露的 Telnet 端口
+    baud: 115200               # 波特率（默认 115200）
 ```
 
-一键使用：
+使用：
 
 ```
-load_config → path: "config.yaml"
-connect_from_config → config_name: "office-pc"
+load_config → path: "config.yaml"           # 加载配置
+connect_from_config → config_name: "office-pc"  # 用名称连接
+setup_com2tcp_from_config → config_name: "serial-com4"  # 串口桥接
+```
+
+### 方式二：MCP 工具直接传参
+
+```
+ssh_connect → session_id: "my-session", host: "192.168.1.16",
+              username: "admin", password: "xxx"
+
+# 串口桥接需要先 SSH 连接，再调用
+ssh_connect → session_id: "win", host: "192.168.1.16", ...
+setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
+                telnet_port: 5200, baud: 115200
 ```
 
 ## com2tcp 串口调试工作流
