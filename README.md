@@ -48,14 +48,16 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 
 ### Claude Code
 
-`~/.claude/mcp.json`（全局）或项目根目录 `.mcp.json`：
+`~/.claude.json`：
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "remote-debug": {
       "command": "python3",
-      "args": ["-m", "remote_debug_mcp"]
+      "args": ["-m", "remote_debug_mcp"],
+      "enabled": true,
+      "timeout": 60000
     }
   }
 }
@@ -66,23 +68,6 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 ```bash
 claude mcp add remote-debug python3 -- -m remote_debug_mcp
 ```
-
-### Claude Desktop
-
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) 或 `%APPDATA%\Claude\claude_desktop_config.json` (Windows)：
-
-```json
-{
-  "mcpServers": {
-    "remote-debug": {
-      "command": "python3",
-      "args": ["-m", "remote_debug_mcp"]
-    }
-  }
-}
-```
-
-> 如果使用虚拟环境，将 `python3` 替换为 `.venv/bin/python3` 的绝对路径。
 
 配置后重启对应客户端即可使用。
 
