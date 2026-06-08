@@ -179,16 +179,18 @@ setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
 | `ssh_disconnect` | 关闭会话 |
 | `ssh_list` | 列出所有 SSH 会话 |
 
-### Telnet（8 个）
+### Telnet（10 个）
 
 | 工具 | 说明 |
 |------|------|
 | `telnet_connect` | 连接（可选用户名/密码，可配缓冲区） |
 | `telnet_execute` | 发送命令并等待响应 |
-| `telnet_send` | 发送原始数据（不等待） |
+| `telnet_send` | 发送原始数据，支持 `__CTRL_C__` / `__CTRL_Z__` / `__CTRL_D__` |
 | `telnet_listen` | 监听指定秒数，返回新数据 |
 | `telnet_read` | 读取缓冲区新数据 |
 | `telnet_read_all` | 读取并清空全部缓冲区 |
+| `telnet_start_monitor` | 启动后台持续监听（可选持续写入文件） |
+| `telnet_stop_monitor` | 停止后台监听，返回累计行数 |
 | `telnet_disconnect` | 关闭会话 |
 | `telnet_list` | 列出所有 Telnet 会话 |
 
@@ -212,7 +214,7 @@ setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
 
 ```
 src/remote_debug_mcp/
-├── server.py         # MCP 服务端：22 个工具定义 + 分发
+├── server.py         # MCP 服务端：23 个工具定义 + 分发
 ├── sessions.py       # SSH/Telnet 会话生命周期管理
 ├── config_loader.py  # YAML 配置文件加载
 ├── com2tcp.exe       # com2tcp 桥接工具（随包发布）
@@ -229,7 +231,8 @@ src/remote_debug_mcp/
 - Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
 - 文件传输 SCP 优先 → SFTP 兜底，SFTP 上传自动 `mkdir` 创建中文目录
 - Windows 命令中的中文参数以 GBK 编码发送，兼容 PowerShell 控制台
-- Telnet 缓冲区 64KB（可配），FIFO 滚动淘汰，支持 utf-8/base64/hex 编码
+- Telnet 缓冲区 64KB（可配），支持 utf-8/base64/hex 编码
+- Telnet 后台监听：deque 行缓存 90 万行（FIFO），可选持续写入文件
 - 自动重连：指数退避，默认最多 3 次
 
 详细设计参见 [DESIGN.md](DESIGN.md)

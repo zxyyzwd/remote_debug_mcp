@@ -16,7 +16,7 @@
 │              remote-debug-mcp                     │
 │  ┌───────────────────────────────────────────┐  │
 │  │              server.py                     │  │
-│  │   • 22 MCP 工具定义 & 注册                 │  │
+│  │   • 23 MCP 工具定义 & 注册                 │  │
 │  │   • call_tool 分发 → SessionManager        │  │
 │  └─────────────────┬─────────────────────────┘  │
 │                    │                              │
@@ -238,7 +238,28 @@ class TelnetSession:
 - `encoding="base64"`: 返回 base64 编码的原始字节
 - `encoding="hex"`: 返回十六进制编码
 
-### 4.4 自动重连
+### 4.4 后台持续监听
+
+```
+telnet_start_monitor(output_file?)
+  │
+  ├─ 启动 daemon 后台线程
+  │    while monitor_active:
+  │        data = child.read_nonblocking(4096)
+  │        lines.append(data.split(b"\n"))
+  │        if output_file: f.write(data)
+  │
+  ├─ 行列缓存: deque(maxlen=900000) FIFO 淘汰
+  │
+  ├─ telnet_send / read / listen 可并发使用
+  │    io_lock 保护 PTY 读写
+  │
+  └─ telnet_stop_monitor → 停止线程，返回行数
+```
+
+monitor 运行时 `telnet_read` / `telnet_read_all` / `telnet_listen` 从 deque 取数据，非激活时沿用旧 buffer 路径。`telnet_send` 支持控制字符 `__CTRL_C__`（0x03）、`__CTRL_Z__`（0x1a）、`__CTRL_D__`（0x04）。
+
+### 4.5 自动重连
 
 Telnet 同样支持自动重连。重连时重新执行完整的连接 + 登录流程。
 
@@ -375,16 +396,18 @@ SSH connection failed [myssh]: Authentication failed
 | `ssh_disconnect` | 关闭会话 | session_id |
 | `ssh_list` | 列出会话 | — |
 
-### Telnet (8 个)
+### Telnet (10 个)
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
 | `telnet_connect` | 连接 | session_id, host, port, username?, password? |
 | `telnet_execute` | 发送命令+读响应 | session_id, command, timeout |
-| `telnet_send` | 发送原始数据 | session_id, data |
+| `telnet_send` | 发送原始数据（支持 `__CTRL_C__`/`__CTRL_Z__`/`__CTRL_D__`） | session_id, data |
 | `telnet_listen` | 监听新数据 | session_id, duration |
 | `telnet_read` | 读取新数据（消费） | session_id, timeout |
 | `telnet_read_all` | 读取全部缓冲（消费） | session_id |
+| `telnet_start_monitor` | 启动后台持续监听，可选文件输出 | session_id, output_file? |
+| `telnet_stop_monitor` | 停止后台监听 | session_id |
 | `telnet_disconnect` | 关闭会话 | session_id |
 | `telnet_list` | 列出会话 | — |
 
@@ -409,7 +432,7 @@ SSH connection failed [myssh]: Authentication failed
 |------|------|
 | `list_sessions` | 列出所有 SSH 和 Telnet 会话 |
 
-**总计: 22 个工具**
+**总计: 23 个工具**
 
 ---
 
