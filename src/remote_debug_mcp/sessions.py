@@ -8,7 +8,6 @@ from typing import Optional, Literal
 import pexpect
 
 
-PROMPT_MARKER = "__MCP_EOM__"
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF = 2.0
 DEFAULT_BUFFER_SIZE = 65536
@@ -86,7 +85,7 @@ class SessionManager:
     # ================================================================
 
     def _ssh_spawn(self, params: ConnectionParams) -> pexpect.spawn:
-        """构建 SSH 命令并生成 spawn，处理密码/密钥认证与首次主机密钥确认。"""
+        """构建 SSH 命令，encoding=None 获取原始字节避免编码转换损失。"""
         ssh_args = [
             "ssh",
             "-T",
@@ -100,12 +99,11 @@ class SessionManager:
         ssh_args.append(f"{params.username}@{params.host}")
 
         child = pexpect.spawn(ssh_args[0], ssh_args[1:],
-                              timeout=params.connect_timeout,
-                              encoding="utf-8", codec_errors="replace")
+                              timeout=params.connect_timeout)
 
         idx = child.expect(
-            ["password:", "Password:",
-             "Are you sure you want to continue connecting",
+            [b"password:", b"Password:",
+             b"Are you sure you want to continue connecting",
              pexpect.TIMEOUT, pexpect.EOF],
             timeout=30,
         )
@@ -114,7 +112,7 @@ class SessionManager:
         elif idx == 2:
             child.sendline("yes")
             idx = child.expect(
-                ["password:", "Password:", pexpect.TIMEOUT, pexpect.EOF],
+                [b"password:", b"Password:", pexpect.TIMEOUT, pexpect.EOF],
                 timeout=10,
             )
             if idx in [0, 1]:
@@ -134,8 +132,8 @@ class SessionManager:
 
     def _detect_and_setup_prompt(self, child: pexpect.spawn) -> str:
         """
-        连接成功后检测远程平台，Windows 则切换到 PowerShell
-        并设置工作目录为 D:\\remote_debug。
+        连接成功后检测远程平台，Windows 则设置工作目录。
+        encoding=None，所有 I/O 操作用原始字节。
         返回平台类型: "linux" | "windows"
         """
         platform = "unknown"
@@ -144,8 +142,12 @@ class SessionManager:
         child.sendline("echo __MCP_PLATFORM_DETECT__ && uname -s 2>/dev/null || echo __WINDOWS__ && echo __MCP_DETECT_DONE__")
         try:
             child.expect("__MCP_DETECT_DONE__", timeout=8)
-            output = child.before or ""
-            if "__WINDOWS__" in output:
+            output = child.before
+            if output is None:
+                output = b""
+            elif isinstance(output, str):
+                output = output.encode("utf-8", errors="replace")
+            if b"__WINDOWS__" in output:
                 platform = "windows"
             else:
                 platform = "linux"
@@ -170,7 +172,7 @@ class SessionManager:
 
     def _setup_windows_workspace(self, child: pexpect.spawn):
         """
-        切换到 PowerShell，创建并进入 D:\\remote_debug 工作目录。
+        切换到 PowerShell 并创建 D:\\remote_debug 工作目录。
         """
         child.sendline("powershell")
         time.sleep(1.5)
@@ -179,7 +181,7 @@ class SessionManager:
         except Exception:
             pass
 
-        child.sendline("D:; New-Item -ItemType Directory -Force -Path D:\\remote_debug | Out-Null; Set-Location D:\\remote_debug; echo __WORKSPACE_READY__")
+        child.sendline("New-Item -ItemType Directory -Force -Path D:\\remote_debug | Out-Null; Set-Location D:\\remote_debug; echo __WORKSPACE_READY__")
         try:
             child.expect("__WORKSPACE_READY__", timeout=10)
         except pexpect.TIMEOUT:
@@ -249,18 +251,23 @@ class SessionManager:
                            timeout: int) -> str:
         child = session.child
         marker = f"__MCP_CMD_{int(time.time() * 1000)}__"
+        marker_bytes = marker.encode("utf-8")
 
         full_cmd = f"{command}; echo {marker}"
+        if session.platform == "windows":
+            full_cmd_bytes = full_cmd.encode("gbk", errors="replace")
+        else:
+            full_cmd_bytes = full_cmd.encode("utf-8")
 
         try:
             child.read_nonblocking(99999, timeout=0.3)
         except Exception:
             pass
 
-        child.sendline(full_cmd)
+        child.send(full_cmd_bytes + b"\n")
 
         deadline = time.time() + timeout
-        all_data = ""
+        all_data = b""
         marker_found = False
 
         while time.time() < deadline:
@@ -269,7 +276,7 @@ class SessionManager:
                 chunk = child.read_nonblocking(99999, timeout=0.3)
                 if chunk:
                     all_data += chunk
-                    if marker in all_data:
+                    if marker_bytes in all_data:
                         marker_found = True
                         break
             except pexpect.TIMEOUT:
@@ -280,8 +287,16 @@ class SessionManager:
         if not marker_found:
             return f"[TIMEOUT] Command exceeded {timeout}s: {command}"
 
-        parts = all_data.rsplit(marker, 1)
-        output = parts[0] if len(parts) > 0 else ""
+        parts = all_data.rsplit(marker_bytes, 1)
+        raw = parts[0] if len(parts) > 0 else b""
+
+        if session.platform == "windows":
+            try:
+                output = raw.decode("gbk")
+            except (UnicodeDecodeError, LookupError):
+                output = raw.decode("utf-8", errors="replace")
+        else:
+            output = raw.decode("utf-8", errors="replace")
 
         output = output.replace("\r\n", "\n").replace("\r", "\n").strip()
         cmd_prefix = command.strip()
@@ -365,8 +380,17 @@ class SessionManager:
         return "\n".join(lines) if lines else "No SSH sessions."
 
     # ================================================================
-    # SSH: 文件传输 (SCP 优先 → SFTP → Base64 兜底)
+    # SSH: 文件传输 (SCP 优先 → SFTP 兜底)
     # ================================================================
+
+    def _normalize_remote_path(self, session: SSHSession, remote_path: str) -> str:
+        """根据远程平台规范化路径格式。
+        Windows 路径转为 /D:/path 格式供 SCP/SFTP 使用。"""
+        if session.platform == "windows":
+            remote_path = remote_path.replace("\\", "/")
+            if not remote_path.startswith("/"):
+                remote_path = "/" + remote_path
+        return remote_path
 
     def ssh_upload(self, session_id: str, local_path: str,
                    remote_path: str) -> str:
@@ -375,6 +399,8 @@ class SessionManager:
             return f"SSH session not found: {session_id}"
         if not os.path.exists(local_path):
             return f"Local file not found: {local_path}"
+
+        remote_path = self._normalize_remote_path(session, remote_path)
 
         result = self._scp_transfer(
             session, local_path,
@@ -387,13 +413,15 @@ class SessionManager:
         if "OK" in result2:
             return result2
 
-        return self.ssh_upload_binary(session_id, local_path, remote_path)
+        return f"SSH upload failed [{session_id}]: SCP({result}) / SFTP({result2})"
 
     def ssh_download(self, session_id: str, remote_path: str,
                      local_path: str) -> str:
         session = self._ssh_sessions.get(session_id)
         if not session:
             return f"SSH session not found: {session_id}"
+
+        remote_path = self._normalize_remote_path(session, remote_path)
 
         result = self._scp_transfer(
             session,
@@ -403,68 +431,11 @@ class SessionManager:
         if "OK" in result:
             return result
 
-        result2 = self._sftp_transfer(session, remote_path, local_path, put=False)
+        result2 = self._sftp_transfer(session, local_path, remote_path, put=False)
         if "OK" in result2:
             return result2
 
-        return self._ssh_cat_download(session, remote_path, local_path)
-
-    def _ssh_cat_download(self, session: SSHSession, remote_path: str,
-                          local_path: str) -> str:
-        """通过 SSH 管道下载二进制文件：base64 编码远程文件，本地解码。"""
-        password = session.params.password
-        port = session.params.port
-
-        if session.platform == "windows":
-            remote_cmd = (
-                f"powershell -Command \"[Convert]::ToBase64String("
-                f"[System.IO.File]::ReadAllBytes('{remote_path}'))\""
-            )
-        else:
-            remote_cmd = f"base64 '{remote_path}'"
-
-        args = [
-            "ssh", "-T", "-p", str(port),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "PreferredAuthentications=password",
-            f"{session.params.username}@{session.params.host}",
-            remote_cmd,
-        ]
-        try:
-            child = pexpect.spawn(args[0], args[1:], timeout=60)
-            idx = child.expect(
-                [b"password:", b"Password:", pexpect.TIMEOUT, pexpect.EOF],
-                timeout=15,
-            )
-            if idx in [0, 1] and password:
-                child.sendline(password.encode())
-                child.expect(pexpect.EOF, timeout=60)
-
-            data = child.before if child.before else b""
-            child.close()
-
-            if not data:
-                return f"SSH download: no data received [{session.session_id}]"
-
-            text = data.decode("utf-8", errors="replace")
-            text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-            b64_lines = [l.strip() for l in text.split("\n")
-                        if l.strip() and not l.strip().startswith("CertUtil")
-                        and "����" not in l and "���" not in l]
-            b64_text = "".join(b64_lines)
-
-            try:
-                decoded = base64.b64decode(b64_text)
-                with open(local_path, "wb") as f:
-                    f.write(decoded)
-                return (f"SSH download OK [{session.session_id}]: "
-                        f"{len(decoded)} bytes -> {local_path}")
-            except Exception as e:
-                return (f"SSH download decode error [{session.session_id}]: {e}, "
-                        f"b64_len={len(b64_text)}")
-        except Exception as e:
-            return f"SSH download error [{session.session_id}]: {e}"
+        return f"SSH download failed [{session_id}]: SCP({result}) / SFTP({result2})"
 
     def _scp_transfer(self, session: SSHSession, src: str,
                       dst: str) -> str:
@@ -500,13 +471,16 @@ class SessionManager:
             child.close()
             if child.exitstatus == 0:
                 return f"SCP transfer OK [{session.session_id}]: {src} -> {dst}"
-            return f"SCP failed (exit={child.exitstatus}) [{session.session_id}]"
+            output = (child.before or "")[:500]
+            return f"SCP failed (exit={child.exitstatus}) [{session.session_id}]: {output}"
+        except Exception as e:
+            return f"SCP error [{session.session_id}]: {e}"
         except Exception as e:
             return f"SCP error [{session.session_id}]: {e}"
 
     def _sftp_transfer(self, session: SSHSession, local_path: str,
                        remote_path: str, put: bool = True) -> str:
-        """SFTP 传输，使用 pexpect 批处理模式。"""
+        """SFTP 传输。上传前自动创建父目录（UTF-8 编码，兼容中文）。"""
         password = session.params.password
         port = session.params.port
         host = session.params.host
@@ -534,6 +508,7 @@ class SessionManager:
                 return f"SFTP auth failed [{session.session_id}]"
 
             if put:
+                self._sftp_mkdirs(child, remote_path)
                 child.sendline(f'put "{local_path}" "{remote_path}"')
             else:
                 child.sendline(f'get "{remote_path}" "{local_path}"')
@@ -554,95 +529,23 @@ class SessionManager:
         except Exception as e:
             return f"SFTP error [{session.session_id}]: {e}"
 
-    def ssh_upload_binary(self, session_id: str, local_path: str,
-                          remote_path: str) -> str:
-        session = self._ssh_sessions.get(session_id)
-        if not session or not session.connected:
-            return f"SSH session not found or not connected: {session_id}"
-        if not os.path.exists(local_path):
-            return f"Local file not found: {local_path}"
-
-        with open(local_path, "rb") as f:
-            data = f.read()
-
-        b64 = base64.b64encode(data).decode()
-        file_size = len(data)
-
-        if session.platform == "windows":
-            return self._upload_binary_windows(session, b64, remote_path, file_size)
-        else:
-            return self._upload_binary_linux(session, b64, remote_path, file_size)
-
-    def _upload_binary_linux(self, session, b64: str, remote_path: str,
-                             file_size: int) -> str:
-        chunk_size = 32000
-        tmp_b64 = remote_path + ".b64"
-
-        for i in range(0, len(b64), chunk_size):
-            chunk = b64[i:i + chunk_size]
-            op = ">" if i == 0 else ">>"
-            encoded_chunk = chunk.replace("'", "'\\''")
-            self.ssh_execute(
-                session.session_id,
-                f"printf '%s' '{encoded_chunk}' {op} {tmp_b64}",
-                timeout=15,
-            )
-
-        self.ssh_execute(
-            session.session_id,
-            f"base64 -d {tmp_b64} > {remote_path} && rm -f {tmp_b64}",
-            timeout=60,
-        )
-
-        verify = self.ssh_execute(
-            session.session_id, f"wc -c < {remote_path}", timeout=5,
-        )
-        try:
-            remote_size = int(verify.strip())
-            if remote_size == file_size:
-                return (f"Binary uploaded via SSH [{session.session_id}]: "
-                        f"{file_size} bytes -> {remote_path}")
-        except ValueError:
-            pass
-
-        return (f"Binary uploaded via SSH [{session.session_id}]: "
-                f"{file_size} bytes -> {remote_path} (verify: {verify})")
-
-    def _upload_binary_windows(self, session, b64: str, remote_path: str,
-                               file_size: int) -> str:
-        chunk_size = 3000  # Windows cmd 命令行限制约 8191 字符
-        remote_path = remote_path.replace("/", "\\")
-        tmp_b64 = remote_path + ".b64"
-
-        for i in range(0, len(b64), chunk_size):
-            chunk = b64[i:i + chunk_size]
-            if i == 0:
-                cmd = f"[System.IO.File]::WriteAllText('{tmp_b64}', '{chunk}')"
+    @staticmethod
+    def _sftp_mkdirs(child, remote_path: str):
+        """通过 SFTP mkdir 逐级创建远程父目录（UTF-8 编码，兼容中文）。"""
+        parent = remote_path.rsplit("/", 1)[0]
+        if not parent or parent == remote_path:
+            return
+        parts = parent.lstrip("/").split("/")
+        current = ""
+        for part in parts:
+            if not part:
+                continue
+            if current:
+                current += "/" + part
             else:
-                cmd = f"[System.IO.File]::AppendAllText('{tmp_b64}', '{chunk}')"
-            self.ssh_execute(session.session_id, cmd, timeout=30)
-
-        self.ssh_execute(
-            session.session_id,
-            f"certutil -decode {tmp_b64} {remote_path}; Remove-Item {tmp_b64}",
-            timeout=60,
-        )
-
-        verify = self.ssh_execute(
-            session.session_id,
-            f"(Get-Item '{remote_path}' -ErrorAction SilentlyContinue).Length",
-            timeout=10,
-        )
-        try:
-            remote_size = int(verify.strip().split("\n")[-1])
-            if remote_size == file_size:
-                return (f"Binary uploaded via SSH [{session.session_id}]: "
-                        f"{file_size} bytes -> {remote_path}")
-        except ValueError:
-            pass
-
-        return (f"Binary uploaded via SSH [{session.session_id}]: "
-                f"{file_size} bytes -> {remote_path} (verify: {verify})")
+                current = "/" + part
+            child.sendline(f'mkdir "{current}"')
+            child.expect(["sftp>", pexpect.TIMEOUT], timeout=5)
 
     # ================================================================
     # Telnet: 连接

@@ -93,7 +93,10 @@ cp <example_path> ~/.config/remote-debug-mcp/config.yaml
 
 `config.yaml` 默认搜索路径：
 - `./config.yaml`（当前工作目录）
-- `<package_dir>/config.yaml`（包安装目录）
+- `<source_dir>/config.yaml`（源码目录）
+- `<source_dir>/../config.yaml`（`src/` 父目录）
+- `<repo_root>/config.yaml`（仓库根目录）
+- `<repo_root>/src/remote_debug_mcp/config.yaml`（源码包目录）
 - `~/.config/remote-debug-mcp/config.yaml`（用户全局配置）
 
 填写以下参数：
@@ -164,16 +167,15 @@ setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
 
 ## 工具参考
 
-### SSH（8 个）
+### SSH（7 个）
 
 | 工具 | 说明 |
 |------|------|
 | `ssh_connect` | 密码连接，后台持久化 |
 | `ssh_connect_key` | 私钥连接 |
-| `ssh_execute` | 执行命令（自动适配 bash/PowerShell） |
-| `ssh_upload` | SCP 上传（优先 SCP → SFTP → Base64） |
-| `ssh_download` | SCP 下载（优先 SCP → SFTP → SSH Base64） |
-| `ssh_upload_binary` | Base64 上传（通用，Windows 兼容） |
+| `ssh_execute` | 执行命令（自动适配 bash/PowerShell，中文编码正确） |
+| `ssh_upload` | 上传文件（SCP 优先 → SFTP 兜底，含空格/中文路径兼容） |
+| `ssh_download` | 下载文件（SCP 优先 → SFTP 兜底，含空格/中文路径兼容） |
 | `ssh_disconnect` | 关闭会话 |
 | `ssh_list` | 列出所有 SSH 会话 |
 
@@ -214,6 +216,7 @@ src/remote_debug_mcp/
 ├── sessions.py       # SSH/Telnet 会话生命周期管理
 ├── config_loader.py  # YAML 配置文件加载
 ├── com2tcp.exe       # com2tcp 桥接工具（随包发布）
+├── config.example.yaml
 ├── __init__.py
 └── __main__.py
 ```
@@ -221,8 +224,11 @@ src/remote_debug_mcp/
 ## 技术要点
 
 - SSH 使用 `pexpect.spawn('ssh', ...)` 直连，**不使用 pxssh**（避免 Windows 提示符兼容问题）
+- pexpect `encoding=None` 原始字节模式，应用层按平台分编码（Windows: GBK, Linux: UTF-8）
 - 命令输出通过 `echo` 唯一标记分隔，不依赖 shell 提示符
 - Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
+- 文件传输 SCP 优先 → SFTP 兜底，SFTP 上传自动 `mkdir` 创建中文目录
+- Windows 命令中的中文参数以 GBK 编码发送，兼容 PowerShell 控制台
 - Telnet 缓冲区 64KB（可配），FIFO 滚动淘汰，支持 utf-8/base64/hex 编码
 - 自动重连：指数退避，默认最多 3 次
 

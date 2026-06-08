@@ -105,8 +105,8 @@ TOOLS = [
     ),
     Tool(
         name="ssh_upload",
-        description="Upload file via SCP (for Linux targets). "
-                    "For Windows targets, use ssh_upload_binary instead.",
+        description="Upload file via SCP or SFTP. Automatically adapts "
+                    "path format for Linux/Windows targets.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -119,7 +119,8 @@ TOOLS = [
     ),
     Tool(
         name="ssh_download",
-        description="Download file via SCP (for Linux targets).",
+        description="Download file via SCP or SFTP. Automatically adapts "
+                    "path format for Linux/Windows targets.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -128,31 +129,6 @@ TOOLS = [
                 "local_path": {"type": "string", "description": "Local destination"},
             },
             "required": ["session_id", "remote_path", "local_path"],
-        },
-    ),
-    Tool(
-        name="ssh_upload_binary",
-        description="Upload a binary file via base64 encoding over the "
-                    "interactive SSH shell. Works on both Linux and Windows. "
-                    "Required for uploading executables (e.g. com2tcp.exe) "
-                    "to Windows targets.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "SSH session ID (must be connected)",
-                },
-                "local_path": {
-                    "type": "string",
-                    "description": "Local binary file path",
-                },
-                "remote_path": {
-                    "type": "string",
-                    "description": "Remote destination path",
-                },
-            },
-            "required": ["session_id", "local_path", "remote_path"],
         },
     ),
     Tool(
@@ -497,15 +473,6 @@ async def call_tool(name: str, arguments: dict):
                 arguments["local_path"],
             )
 
-        elif name == "ssh_upload_binary":
-            result = await loop.run_in_executor(
-                None,
-                mgr.ssh_upload_binary,
-                arguments["session_id"],
-                arguments["local_path"],
-                arguments["remote_path"],
-            )
-
         elif name == "ssh_list":
             result = mgr.ssh_list()
 
@@ -731,7 +698,7 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
 
     upload_result = await loop.run_in_executor(
         None,
-        mgr.ssh_upload_binary,
+        mgr.ssh_upload,
         ssh_session_id,
         COM2TCP_PATH,
         remote_exe_path,

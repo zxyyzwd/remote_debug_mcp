@@ -116,10 +116,14 @@ def _add_entry(config: AppConfig, entry: dict):
 
 def load_config(path: str = "config.yaml") -> AppConfig:
     """加载配置文件，自动搜索多个路径。"""
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.join(source_dir, "..", "..", "..")
     search_paths = [
         path,
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", path),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), path),
+        os.path.join(source_dir, path),
+        os.path.join(source_dir, "..", path),
+        os.path.join(repo_root, path),
+        os.path.join(repo_root, "src", "remote_debug_mcp", path),
         os.path.join(os.path.expanduser("~"), ".config", "remote-debug-mcp", path),
     ]
     for p in search_paths:
@@ -131,9 +135,11 @@ def load_config(path: str = "config.yaml") -> AppConfig:
 
 def example_config_path() -> str:
     """返回 config.example.yaml 的路径（用于参考/复制）。"""
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.join(source_dir, "..", "..", "..")
     search = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.yaml"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "config.example.yaml"),
+        os.path.join(source_dir, "config.example.yaml"),
+        os.path.join(repo_root, "config.example.yaml"),
     ]
     for p in search:
         if os.path.exists(p):
