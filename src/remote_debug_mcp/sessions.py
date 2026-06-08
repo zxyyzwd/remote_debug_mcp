@@ -2,6 +2,7 @@ import os
 import time
 import base64
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 
@@ -11,6 +12,7 @@ import pexpect
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF = 2.0
 DEFAULT_BUFFER_SIZE = 65536
+MAX_LINE_COUNT = 900000
 
 
 @dataclass
@@ -61,9 +63,19 @@ class TelnetSession:
     buffer: bytes = b""
     buffer_max_size: int = DEFAULT_BUFFER_SIZE
     read_cursor: int = 0
+    lines: deque = field(default_factory=deque)
+    line_count: int = 0
+    read_line_cursor: int = 0
+    monitor_active: bool = False
+    monitor_thread: Optional[threading.Thread] = None
+    output_file: Optional[str] = None
+    io_lock: threading.Lock = field(default_factory=threading.Lock)
     created_at: float = field(default_factory=time.time)
 
     def close(self):
+        self.monitor_active = False
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=2)
         if self.child and self.child.isalive():
             try:
                 self.child.sendline("exit")
@@ -686,7 +698,15 @@ class SessionManager:
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
         try:
-            session.child.send(data)
+            with session.io_lock:
+                if data == "__CTRL_C__":
+                    session.child.send("\x03")
+                elif data == "__CTRL_D__":
+                    session.child.send("\x04")
+                elif data == "__CTRL_Z__":
+                    session.child.send("\x1a")
+                else:
+                    session.child.send(data)
             return f"Data sent to [{session_id}]"
         except (pexpect.EOF, OSError) as e:
             self._try_reconnect_telnet(session, str(e), silent=True)
@@ -697,23 +717,31 @@ class SessionManager:
             return f"Telnet send error [{session_id}]: {e}"
 
     def telnet_listen(self, session_id: str, duration: int = 10,
-                      encoding: str = "utf-8") -> str:
+                       encoding: str = "utf-8") -> str:
         session = self._telnet_sessions.get(session_id)
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
 
         try:
-            child = session.child
             end_time = time.time() + duration
             while time.time() < end_time:
                 remaining = max(0.1, end_time - time.time())
-                data = self._telnet_expect_data(child, remaining)
+                if session.monitor_active:
+                    time.sleep(remaining)
+                    break
+                data = self._telnet_expect_data(session.child, remaining)
                 if data:
                     self._append_to_buffer(session, data)
+                    self._append_to_lines(session, data)
                 else:
                     time.sleep(0.05)
 
-            result = self._read_new_data(session, encoding)
+            if session.monitor_active:
+                new_lines = list(session.lines)[session.read_line_cursor:]
+                session.read_line_cursor = len(session.lines)
+                result = self._encode_lines(new_lines, encoding)
+            else:
+                result = self._read_new_data(session, encoding)
             return result if result else "(no data received)"
         except (pexpect.EOF, OSError) as e:
             partial = self._read_new_data(session, encoding)
@@ -724,23 +752,30 @@ class SessionManager:
             return f"Telnet listen error [{session_id}]: {e}"
 
     def telnet_read(self, session_id: str, timeout: int = 3,
-                    encoding: str = "utf-8") -> str:
+                     encoding: str = "utf-8") -> str:
         session = self._telnet_sessions.get(session_id)
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
 
         try:
-            child = session.child
-            end_time = time.time() + timeout
-            while time.time() < end_time:
-                remaining = max(0.1, end_time - time.time())
-                data = self._telnet_expect_data(child, remaining)
-                if data:
-                    self._append_to_buffer(session, data)
-                else:
-                    break
+            if not session.monitor_active:
+                child = session.child
+                end_time = time.time() + timeout
+                while time.time() < end_time:
+                    remaining = max(0.1, end_time - time.time())
+                    data = self._telnet_expect_data(child, remaining)
+                    if data:
+                        self._append_to_buffer(session, data)
+                        self._append_to_lines(session, data)
+                    else:
+                        break
 
-            result = self._read_new_data(session, encoding)
+                result = self._read_new_data(session, encoding)
+            else:
+                time.sleep(min(timeout, 1))
+                new_lines = list(session.lines)[session.read_line_cursor:]
+                session.read_line_cursor = len(session.lines)
+                result = self._encode_lines(new_lines, encoding)
             return result if result else "(no new data)"
         except (pexpect.EOF, OSError) as e:
             partial = self._read_new_data(session, encoding)
@@ -749,24 +784,112 @@ class SessionManager:
             return f"Telnet read error [{session_id}]: {e}"
 
     def telnet_read_all(self, session_id: str,
-                        encoding: str = "utf-8") -> str:
+                         encoding: str = "utf-8") -> str:
         session = self._telnet_sessions.get(session_id)
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
 
         try:
-            child = session.child
-            while True:
-                data = self._telnet_expect_data(child, 0.5)
-                if data:
-                    self._append_to_buffer(session, data)
-                else:
-                    break
-
-            result = self._read_all_data(session, encoding)
+            if not session.monitor_active:
+                child = session.child
+                while True:
+                    data = self._telnet_expect_data(child, 0.5)
+                    if data:
+                        self._append_to_buffer(session, data)
+                        self._append_to_lines(session, data)
+                    else:
+                        break
+                result = self._read_all_data(session, encoding)
+            else:
+                all_lines = list(session.lines)
+                session.read_line_cursor = len(session.lines)
+                result = self._encode_lines(all_lines, encoding)
             return result if result else "(no data in buffer)"
         except Exception as e:
             return f"Telnet read_all error [{session_id}]: {e}"
+
+    def _append_to_lines(self, session: TelnetSession, data: bytes):
+        """将原始字节数据拆行追加到行列缓存。"""
+        for line in data.split(b"\n"):
+            line = line.rstrip(b"\r")
+            if line:
+                session.lines.append(line)
+                session.line_count += 1
+
+    @staticmethod
+    def _encode_lines(lines: list, encoding: str) -> str:
+        """将字节行列表按指定编码转换为字符串。"""
+        encoded = []
+        for line in lines:
+            s = SessionManager._encode_bytes(line, encoding)
+            encoded.append(s)
+        return "\n".join(encoded)
+
+    # ================================================================
+    # Telnet: 后台持续监听
+    # ================================================================
+
+    def _telnet_background_reader(self, session: TelnetSession):
+        """后台线程：持续从 PTY 读取数据写入行缓存和文件。"""
+        while session.monitor_active and session.child and session.child.isalive():
+            try:
+                with session.io_lock:
+                    data = session.child.read_nonblocking(4096, timeout=0.3)
+                if data:
+                    if not isinstance(data, bytes):
+                        data = data.encode("utf-8", errors="replace")
+                    self._append_to_lines(session, data)
+                    if session.output_file:
+                        try:
+                            with open(session.output_file, "ab") as f:
+                                f.write(data)
+                        except Exception:
+                            pass
+            except pexpect.TIMEOUT:
+                continue
+            except (pexpect.EOF, OSError):
+                session.connected = False
+                break
+            except Exception:
+                time.sleep(0.1)
+        session.monitor_active = False
+
+    def telnet_start_monitor(self, session_id: str,
+                              output_file: str = "") -> str:
+        """启动后台监听，数据持续写入行缓存，可选输出到文件。"""
+        session = self._telnet_sessions.get(session_id)
+        if not session or not session.connected:
+            return f"Telnet session not found or not connected: {session_id}"
+        if session.monitor_active:
+            return f"Telnet monitor already active [{session_id}]"
+
+        session.lines = deque(maxlen=MAX_LINE_COUNT)
+        session.line_count = 0
+        session.read_line_cursor = 0
+        session.monitor_active = True
+        if output_file:
+            session.output_file = output_file
+
+        session.monitor_thread = threading.Thread(
+            target=self._telnet_background_reader,
+            args=(session,),
+            daemon=True,
+        )
+        session.monitor_thread.start()
+        return f"Telnet monitor started [{session_id}]"
+
+    def telnet_stop_monitor(self, session_id: str) -> str:
+        """停止后台监听。"""
+        session = self._telnet_sessions.get(session_id)
+        if not session:
+            return f"Telnet session not found: {session_id}"
+        if not session.monitor_active:
+            return f"Telnet monitor not active [{session_id}]"
+
+        session.monitor_active = False
+        if session.monitor_thread and session.monitor_thread.is_alive():
+            session.monitor_thread.join(timeout=3)
+        return f"Telnet monitor stopped [{session_id}]: {session.line_count} lines"
 
     # ================================================================
     # Telnet: 重连 / 断开 / 列表
@@ -815,9 +938,11 @@ class SessionManager:
         for sid, s in self._telnet_sessions.items():
             status = "connected" if s.connected else "disconnected"
             buf_kb = len(s.buffer) / 1024
+            mon = " [monitor]" if s.monitor_active else ""
+            line_info = f" lines={len(s.lines)}" if s.monitor_active else ""
             lines.append(
                 f"  [{sid}] {s.params.host}:{s.params.port} ({status}) "
-                f"buffer={buf_kb:.1f}KB"
+                f"buffer={buf_kb:.1f}KB{mon}{line_info}"
             )
         return "\n".join(lines) if lines else "No Telnet sessions."
 

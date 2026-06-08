@@ -399,6 +399,44 @@ TOOLS = [
             "required": ["config_name"],
         },
     ),
+    # ── Telnet Monitor ────────────────────────────────
+    Tool(
+        name="telnet_start_monitor",
+        description="Start background monitoring on a Telnet session. "
+                    "Data is continuously read into a circular buffer "
+                    "(max 900000 lines, oldest evicted when full). "
+                    "Optionally append to a file continuously.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Telnet session ID",
+                },
+                "output_file": {
+                    "type": "string",
+                    "description": "Optional local file path to continuously "
+                                   "append received data",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="telnet_stop_monitor",
+        description="Stop background monitoring on a Telnet session. "
+                    "Returns the total line count captured.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Telnet session ID",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
     # ── Utility ──────────────────────────────────────
     Tool(
         name="list_sessions",
@@ -545,6 +583,15 @@ async def call_tool(name: str, arguments: dict):
                 arguments["telnet_port"],
                 arguments.get("baud", 115200),
             )
+
+        elif name == "telnet_start_monitor":
+            result = mgr.telnet_start_monitor(
+                arguments["session_id"],
+                arguments.get("output_file", ""),
+            )
+
+        elif name == "telnet_stop_monitor":
+            result = mgr.telnet_stop_monitor(arguments["session_id"])
 
         elif name == "list_sessions":
             result = mgr.list_all()
