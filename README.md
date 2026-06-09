@@ -4,10 +4,10 @@
 
 ## 功能
 
-- **SSH** — 持续后台连接远程服务器/Windows PC，支持命令执行、SCP/SFTP 文件传输、自动重连
-- **Telnet** — 持续后台连接，支持命令执行、数据收发、串口数据监听
+- **SSH** — 持续后台连接远程服务器/Windows PC，支持命令执行、SCP/SFTP 文件传输、MD5 完整性校验、自动重连
+- **Telnet** — 持续后台连接，支持数据收发、串口数据监听、后台监控保存
 - **com2tcp** — 一键桥接 Windows COM 串口到 TCP Telnet，远程调试串口设备
-- **配置文件** — YAML 文件预设连接参数，一键连接
+- **配置文件** — YAML 文件预设连接参数，`ssh_connect(config_name="xxx")` 一键连接
 
 ## 安装
 
@@ -68,28 +68,15 @@ pip install -e .
 claude mcp add remote-debug python3 -- -m remote_debug_mcp
 ```
 
-> 使用虚拟环境时，将 `python3` 替换为 `~/.config/remote_debug_mcp/.venv/bin/python3`。
+> 使用虚拟环境时，将 `python3` 替换为虚拟机环境中的 Python 路径。
 
 配置后重启客户端即可使用。
 
 ## 连接配置
 
-支持两种方式提供 SSH / Telnet / COM 端口参数。
+### YAML 配置文件
 
-### 方式一：YAML 配置文件（推荐）
-
-`config.example.yaml` 随包安装，位于包目录下。复制为 `config.yaml` 即可使用：
-
-```bash
-# 找到示例文件
-python3 -c "from remote_debug_mcp.config_loader import example_config_path; print(example_config_path())"
-
-# 复制到当前目录或全局配置目录
-cp <example_path> ./config.yaml
-# 或
-mkdir -p ~/.config/remote-debug-mcp
-cp <example_path> ~/.config/remote-debug-mcp/config.yaml
-```
+`config.yaml` 放在工作目录或仓库根目录，首次调用 `ssh_connect(config_name=...)` 时自动加载并缓存。
 
 `config.yaml` 默认搜索路径：
 - `./config.yaml`（当前工作目录）
@@ -98,8 +85,6 @@ cp <example_path> ~/.config/remote-debug-mcp/config.yaml
 - `<repo_root>/config.yaml`（仓库根目录）
 - `<repo_root>/src/remote_debug_mcp/config.yaml`（源码包目录）
 - `~/.config/remote-debug-mcp/config.yaml`（用户全局配置）
-
-填写以下参数：
 
 ```yaml
 connections:
@@ -129,21 +114,9 @@ connections:
 使用：
 
 ```
-load_config → path: "config.yaml"           # 加载配置
-connect_from_config → config_name: "office-pc"  # 用名称连接
-setup_com2tcp_from_config → config_name: "serial-com4"  # 串口桥接
-```
-
-### 方式二：MCP 工具直接传参
-
-```
-ssh_connect → session_id: "my-session", host: "192.168.1.16",
-              username: "admin", password: "xxx"
-
-# 串口桥接需要先 SSH 连接，再调用
-ssh_connect → session_id: "win", host: "192.168.1.16", ...
-setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
-                telnet_port: 5200, baud: 115200
+ssh_connect → config_name: "office-pc"            # 自动从 config.yaml 读参数连接
+list_connections                                   # 查看已加载的配置
+save_config                                        # 持久化当前内存配置到文件
 ```
 
 ## com2tcp 串口调试工作流
@@ -158,65 +131,60 @@ setup_com2tcp → ssh_session_id: "win", com_port: "COM4",
 ```
 
 ```
-1. load_config → path: "config.yaml"
-2. setup_com2tcp_from_config → config_name: "serial-com4"
+1. ssh_connect → config_name: "office-pc"    # SSH 到 Windows PC
+2. setup_com2tcp → ssh_session_id: "...", com_port: "COM4", telnet_port: 5200
 3. telnet_connect → host: "192.168.1.16", port: 5200
-4. telnet_execute → command: "ls"
+4. telnet_send → data: "ls\n", timeout: 3
 5. telnet_listen → duration: 10
+6. telnet_start_monitor → output_file: "serial.log"  # 后台持续记录
 ```
 
 ## 工具参考
 
-### SSH（7 个）
+### SSH（6 个）
 
 | 工具 | 说明 |
 |------|------|
-| `ssh_connect` | 密码连接，后台持久化 |
-| `ssh_connect_key` | 私钥连接 |
+| `ssh_connect` | 通过 config_name 从 config.yaml 读取参数连接（密码/密钥自适应） |
 | `ssh_execute` | 执行命令（自动适配 bash/PowerShell，中文编码正确） |
-| `ssh_upload` | 上传文件（SCP 优先 → SFTP 兜底，含空格/中文路径兼容） |
-| `ssh_download` | 下载文件（SCP 优先 → SFTP 兜底，含空格/中文路径兼容） |
+| `ssh_upload` | 上传文件（SCP → SFTP 降级，自动 MD5 校验） |
+| `ssh_download` | 下载文件（SCP → SFTP 降级，自动 MD5 校验） |
 | `ssh_disconnect` | 关闭会话 |
 | `ssh_list` | 列出所有 SSH 会话 |
 
-### Telnet（10 个）
+### Telnet（7 个）
 
 | 工具 | 说明 |
 |------|------|
 | `telnet_connect` | 连接（可选用户名/密码，可配缓冲区） |
-| `telnet_execute` | 发送命令并等待响应 |
-| `telnet_send` | 发送原始数据，支持 `__CTRL_C__` / `__CTRL_Z__` / `__CTRL_D__` |
+| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；`__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`） |
 | `telnet_listen` | 监听指定秒数，返回新数据 |
-| `telnet_read` | 读取缓冲区新数据 |
-| `telnet_read_all` | 读取并清空全部缓冲区 |
 | `telnet_start_monitor` | 启动后台持续监听（可选持续写入文件） |
 | `telnet_stop_monitor` | 停止后台监听，返回累计行数 |
 | `telnet_disconnect` | 关闭会话 |
 | `telnet_list` | 列出所有 Telnet 会话 |
 
-### 配置（4 个）
+### 配置（2 个）
 
 | 工具 | 说明 |
 |------|------|
-| `load_config` | 加载 YAML 配置文件 |
-| `list_connections` | 列出配置中的所有连接 |
-| `connect_from_config` | 按名称一键 SSH 连接 |
-| `setup_com2tcp_from_config` | 按名称一键 com2tcp 部署 |
+| `list_connections` | 列出已加载配置中的所有连接 |
+| `save_config` | 保存当前内存配置到 config.yaml |
 
 ### 通用（2 个）
 
 | 工具 | 说明 |
 |------|------|
-| `setup_com2tcp` | 手动 com2tcp 工作流 |
+| `setup_com2tcp` | 手动 com2tcp 工作流（上传 + 启动 + 验证） |
 | `list_sessions` | 列出所有 SSH + Telnet 会话 |
 
 ## 架构
 
 ```
 src/remote_debug_mcp/
-├── server.py         # MCP 服务端：23 个工具定义 + 分发
+├── server.py         # MCP 服务端：17 个工具定义 + 分发
 ├── sessions.py       # SSH/Telnet 会话生命周期管理
-├── config_loader.py  # YAML 配置文件加载
+├── config_loader.py  # YAML 配置文件加载/保存
 ├── com2tcp.exe       # com2tcp 桥接工具（随包发布）
 ├── config.example.yaml
 ├── __init__.py
@@ -229,10 +197,11 @@ src/remote_debug_mcp/
 - pexpect `encoding=None` 原始字节模式，应用层按平台分编码（Windows: GBK, Linux: UTF-8）
 - 命令输出通过 `echo` 唯一标记分隔，不依赖 shell 提示符
 - Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
-- 文件传输 SCP 优先 → SFTP 兜底，SFTP 上传自动 `mkdir` 创建中文目录
-- Windows 命令中的中文参数以 GBK 编码发送，兼容 PowerShell 控制台
+- 文件传输 SCP 优先 → SFTP 兜底，传输后自动 MD5 校验
+- Telnet `telnet_send` 合并原 `telnet_execute`，`timeout=0` 不等待，`timeout>0` 等响应
 - Telnet 缓冲区 64KB（可配），支持 utf-8/base64/hex 编码
 - Telnet 后台监听：deque 行缓存 90 万行（FIFO），可选持续写入文件
 - 自动重连：指数退避，默认最多 3 次
+- 配置自动缓存内存，`save_config` 持久化到 YAML
 
 详细设计参见 [DESIGN.md](DESIGN.md)

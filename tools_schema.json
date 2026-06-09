@@ -1,0 +1,351 @@
+[
+  {
+    "name": "ssh_connect",
+    "description": "SSH connect using a named configuration from config.yaml. Auto-detects remote OS (Linux/Windows). Supports auto-reconnect on connection loss. Use list_connections to see available config entries.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Unique session ID (reusing overwrites old)"
+        },
+        "config_name": {
+          "type": "string",
+          "description": "Name of the connection in config.yaml (e.g. 'windows-pc')"
+        },
+        "max_retries": {
+          "type": "integer",
+          "description": "Max auto-reconnect attempts (default 3)",
+          "default": 3
+        }
+      },
+      "required": [
+        "session_id",
+        "config_name"
+      ]
+    }
+  },
+  {
+    "name": "ssh_execute",
+    "description": "Execute command on a connected SSH session. Automatically adapts to Linux (bash) or Windows (PowerShell) remote shell. Triggers auto-reconnect if connection dropped.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID from ssh_connect"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command to execute"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout seconds (default 30)",
+          "default": 30
+        }
+      },
+      "required": [
+        "session_id",
+        "command"
+      ]
+    }
+  },
+  {
+    "name": "ssh_disconnect",
+    "description": "Close and remove an SSH session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        }
+      },
+      "required": [
+        "session_id"
+      ]
+    }
+  },
+  {
+    "name": "ssh_upload",
+    "description": "Upload file via SCP or SFTP. Automatically adapts path format for Linux/Windows targets.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        },
+        "local_path": {
+          "type": "string",
+          "description": "Local file path"
+        },
+        "remote_path": {
+          "type": "string",
+          "description": "Remote destination"
+        }
+      },
+      "required": [
+        "session_id",
+        "local_path",
+        "remote_path"
+      ]
+    }
+  },
+  {
+    "name": "ssh_download",
+    "description": "Download file via SCP or SFTP. Automatically adapts path format for Linux/Windows targets.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        },
+        "remote_path": {
+          "type": "string",
+          "description": "Remote file path"
+        },
+        "local_path": {
+          "type": "string",
+          "description": "Local destination"
+        }
+      },
+      "required": [
+        "session_id",
+        "remote_path",
+        "local_path"
+      ]
+    }
+  },
+  {
+    "name": "ssh_list",
+    "description": "List all active SSH sessions with platform and status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "telnet_connect",
+    "description": "Connect to remote host via Telnet, persistent background session. Supports optional login. Maintains an internal buffer for accumulated data (configurable size).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Unique session ID"
+        },
+        "host": {
+          "type": "string",
+          "description": "Remote host IP/hostname"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Telnet port (default 23)",
+          "default": 23
+        },
+        "username": {
+          "type": "string",
+          "description": "Login username (optional)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Login password (optional)"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Connection timeout seconds (default 15)",
+          "default": 15
+        },
+        "buffer_max_size": {
+          "type": "integer",
+          "description": "Max buffer size in bytes (default 65536 = 64KB)",
+          "default": 65536
+        },
+        "max_retries": {
+          "type": "integer",
+          "description": "Max auto-reconnect attempts (default 3)",
+          "default": 3
+        }
+      },
+      "required": [
+        "session_id",
+        "host"
+      ]
+    }
+  },
+  {
+    "name": "telnet_send",
+    "description": "Send data to a Telnet session. timeout=0: send and return immediately (no wait). timeout>0: send then wait for response. Supports auto-reconnect. Special values: __CTRL_C__, __CTRL_D__, __CTRL_Z__.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        },
+        "data": {
+          "type": "string",
+          "description": "Data/command to send"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Wait timeout seconds. 0 = no wait (default), >0 = wait for response",
+          "default": 0
+        }
+      },
+      "required": [
+        "session_id",
+        "data"
+      ]
+    }
+  },
+  {
+    "name": "telnet_listen",
+    "description": "Listen on a Telnet session for a specified duration, returning all newly received data (consumer pattern: data is consumed after read). Supports multiple encodings for binary data.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "Listen duration seconds (default 10)",
+          "default": 10
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "utf-8",
+            "base64",
+            "hex"
+          ],
+          "description": "Output encoding: utf-8 (text), base64 (binary safe), hex (binary safe)",
+          "default": "utf-8"
+        }
+      },
+      "required": [
+        "session_id"
+      ]
+    }
+  },
+  {
+    "name": "telnet_disconnect",
+    "description": "Close and remove a Telnet session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session ID"
+        }
+      },
+      "required": [
+        "session_id"
+      ]
+    }
+  },
+  {
+    "name": "telnet_list",
+    "description": "List all active Telnet sessions with status and buffer sizes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "setup_com2tcp",
+    "description": "Complete com2tcp workflow:\n1. SSH upload com2tcp.exe to Windows PC via base64\n2. Kill any previous com2tcp instance on the same port\n3. Start com2tcp in background (PowerShell Start-Process)\n4. Verify process is running\n5. Returns telnet connection info\n\nAfter setup, use telnet_connect to host:telnet_port to access serial data from the COM port.\n\nExample: setup_com2tcp with com_port='COM4', telnet_port=5200 runs:\n  com2tcp.exe --telnet --ignore-dsr --baud 115200 COM4 5200",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ssh_session_id": {
+          "type": "string",
+          "description": "SSH session ID (must already be connected to the Windows PC with the COM port)"
+        },
+        "com_port": {
+          "type": "string",
+          "description": "COM port name (e.g. COM4)"
+        },
+        "telnet_port": {
+          "type": "integer",
+          "description": "Telnet port to expose (e.g. 5200)"
+        },
+        "baud": {
+          "type": "integer",
+          "description": "Baud rate (default 115200)",
+          "default": 115200
+        }
+      },
+      "required": [
+        "ssh_session_id",
+        "com_port",
+        "telnet_port"
+      ]
+    }
+  },
+  {
+    "name": "list_connections",
+    "description": "List all configured connections from config.yaml. Shows SSH and com2tcp entries.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "save_config",
+    "description": "Save current in-memory configuration to config.yaml.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "telnet_start_monitor",
+    "description": "Start background monitoring on a Telnet session. Data is continuously read into a circular buffer (max 900000 lines, oldest evicted when full). Optionally append to a file continuously.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Telnet session ID"
+        },
+        "output_file": {
+          "type": "string",
+          "description": "Optional local file path to continuously append received data"
+        }
+      },
+      "required": [
+        "session_id"
+      ]
+    }
+  },
+  {
+    "name": "telnet_stop_monitor",
+    "description": "Stop background monitoring on a Telnet session. Returns the total line count captured.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Telnet session ID"
+        }
+      },
+      "required": [
+        "session_id"
+      ]
+    }
+  },
+  {
+    "name": "list_sessions",
+    "description": "List all active SSH and Telnet sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  }
+]

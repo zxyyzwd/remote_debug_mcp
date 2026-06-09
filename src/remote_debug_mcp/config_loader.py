@@ -114,8 +114,8 @@ def _add_entry(config: AppConfig, entry: dict):
         ))
 
 
-def load_config(path: str = "config.yaml") -> AppConfig:
-    """加载配置文件，自动搜索多个路径。"""
+def _find_config_path(path: str) -> str:
+    """搜索配置文件路径，返回第一个存在的文件路径。"""
     source_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.join(source_dir, "..", "..", "..")
     search_paths = [
@@ -128,12 +128,56 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     ]
     for p in search_paths:
         if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return _parse_yaml_simple(f.read())
-    raise FileNotFoundError(f"Config file not found: {path} (searched: {search_paths})")
+            return p
+    return search_paths[0]  # default to cwd
 
 
-def example_config_path() -> str:
+def load_config(path: str = "config.yaml") -> AppConfig:
+    """加载配置文件，自动搜索多个路径。"""
+    found = _find_config_path(path)
+    if os.path.exists(found):
+        with open(found, "r", encoding="utf-8") as f:
+            return _parse_yaml_simple(f.read())
+    raise FileNotFoundError(f"Config file not found: {path}")
+
+
+def _build_yaml(config: AppConfig) -> str:
+    """将 AppConfig 序列化为 YAML 字符串。"""
+    lines = ["# 远程调试连接配置文件",
+             "# 支持 SSH 连接和 com2tcp 串口映射配置",
+             "",
+             "connections:"]
+    for c in config.ssh_connections:
+        lines.append(f"  - name: {c.name}")
+        lines.append("    type: ssh")
+        lines.append(f"    host: \"{c.host}\"")
+        lines.append(f"    port: {c.port}")
+        lines.append(f"    username: \"{c.username}\"")
+        lines.append(f"    password: \"{c.password}\"")
+        if c.key_file:
+            lines.append(f"    key_file: \"{c.key_file}\"")
+        lines.append("")
+    for c in config.com2tcp_connections:
+        lines.append(f"  - name: {c.name}")
+        lines.append("    type: com2tcp")
+        lines.append(f"    ssh: \"{c.ssh}\"")
+        lines.append(f"    com_port: \"{c.com_port}\"")
+        lines.append(f"    telnet_port: {c.telnet_port}")
+        lines.append(f"    baud: {c.baud}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def save_config(config: AppConfig, path: str = "config.yaml") -> str:
+    """保存当前配置到 YAML 文件。"""
+    output_path = os.path.join(os.getcwd(), path)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(_build_yaml(config))
+    ssh_count = len(config.ssh_connections)
+    c2t_count = len(config.com2tcp_connections)
+    return (f"Config saved: {output_path}\n"
+            f"  SSH connections: {ssh_count}\n"
+            f"  com2tcp entries: {c2t_count}")
     """返回 config.example.yaml 的路径（用于参考/复制）。"""
     source_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.join(source_dir, "..", "..", "..")

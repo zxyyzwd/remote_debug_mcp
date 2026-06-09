@@ -6,7 +6,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from remote_debug_mcp.sessions import get_manager
-from remote_debug_mcp.config_loader import load_config, get_config, reload_config
+from remote_debug_mcp.config_loader import load_config, get_config, reload_config, save_config
 
 server = Server("remote-debug-mcp")
 
@@ -17,9 +17,10 @@ TOOLS = [
     # ── SSH ──────────────────────────────────────────
     Tool(
         name="ssh_connect",
-        description="SSH password login, persistent background session. "
+        description="SSH connect using a named configuration from config.yaml. "
                     "Auto-detects remote OS (Linux/Windows). "
-                    "Supports auto-reconnect on connection loss.",
+                    "Supports auto-reconnect on connection loss. "
+                    "Use list_connections to see available config entries.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -27,35 +28,9 @@ TOOLS = [
                     "type": "string",
                     "description": "Unique session ID (reusing overwrites old)",
                 },
-                "host": {"type": "string", "description": "Remote host IP/hostname"},
-                "port": {"type": "integer", "description": "SSH port", "default": 22},
-                "username": {"type": "string", "description": "SSH username"},
-                "password": {"type": "string", "description": "SSH password"},
-                "max_retries": {
-                    "type": "integer",
-                    "description": "Max auto-reconnect attempts (default 3)",
-                    "default": 3,
-                },
-            },
-            "required": ["session_id", "host", "username", "password"],
-        },
-    ),
-    Tool(
-        name="ssh_connect_key",
-        description="SSH private key login, persistent background session.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "session_id": {
+                "config_name": {
                     "type": "string",
-                    "description": "Unique session ID",
-                },
-                "host": {"type": "string", "description": "Remote host IP/hostname"},
-                "port": {"type": "integer", "description": "SSH port", "default": 22},
-                "username": {"type": "string", "description": "SSH username"},
-                "key_file": {
-                    "type": "string",
-                    "description": "Path to private key file",
+                    "description": "Name of the connection in config.yaml (e.g. 'windows-pc')",
                 },
                 "max_retries": {
                     "type": "integer",
@@ -63,7 +38,7 @@ TOOLS = [
                     "default": 3,
                 },
             },
-            "required": ["session_id", "host", "username", "key_file"],
+            "required": ["session_id", "config_name"],
         },
     ),
     Tool(
@@ -183,33 +158,22 @@ TOOLS = [
         },
     ),
     Tool(
-        name="telnet_execute",
-        description="Send a command/string to a Telnet session, wait for "
-                    "response. For raw serial data, use telnet_listen or "
-                    "telnet_read instead.",
+        name="telnet_send",
+        description="Send data to a Telnet session. timeout=0: send and "
+                    "return immediately (no wait). timeout>0: send then "
+                    "wait for response. Supports auto-reconnect. "
+                    "Special values: __CTRL_C__, __CTRL_D__, __CTRL_Z__.",
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {"type": "string", "description": "Session ID"},
-                "command": {"type": "string", "description": "Command to send"},
+                "data": {"type": "string", "description": "Data/command to send"},
                 "timeout": {
                     "type": "integer",
-                    "description": "Wait timeout seconds (default 5)",
-                    "default": 5,
+                    "description": "Wait timeout seconds. 0 = no wait (default), "
+                                   ">0 = wait for response",
+                    "default": 0,
                 },
-            },
-            "required": ["session_id", "command"],
-        },
-    ),
-    Tool(
-        name="telnet_send",
-        description="Send raw data to a Telnet session without waiting "
-                    "for response. Supports auto-reconnect.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
-                "data": {"type": "string", "description": "Raw data to send"},
             },
             "required": ["session_id", "data"],
         },
@@ -234,48 +198,6 @@ TOOLS = [
                     "enum": ["utf-8", "base64", "hex"],
                     "description": "Output encoding: utf-8 (text), "
                                    "base64 (binary safe), hex (binary safe)",
-                    "default": "utf-8",
-                },
-            },
-            "required": ["session_id"],
-        },
-    ),
-    Tool(
-        name="telnet_read",
-        description="Read newly available data from a Telnet session "
-                    "buffer (consumer: data is consumed). Does not block "
-                    "waiting; returns immediately with buffered data.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
-                "timeout": {
-                    "type": "integer",
-                    "description": "Read timeout seconds (default 3)",
-                    "default": 3,
-                },
-                "encoding": {
-                    "type": "string",
-                    "enum": ["utf-8", "base64", "hex"],
-                    "description": "Output encoding",
-                    "default": "utf-8",
-                },
-            },
-            "required": ["session_id"],
-        },
-    ),
-    Tool(
-        name="telnet_read_all",
-        description="Read ALL buffered data from a Telnet session, "
-                    "including previously read data. Clears the entire buffer.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
-                "encoding": {
-                    "type": "string",
-                    "enum": ["utf-8", "base64", "hex"],
-                    "description": "Output encoding",
                     "default": "utf-8",
                 },
             },
@@ -340,64 +262,15 @@ TOOLS = [
     ),
     # ── Config ──────────────────────────────────────
     Tool(
-        name="load_config",
-        description="Load connection configuration from a YAML file. "
-                    "After loading, use list_connections to see configured "
-                    "entries and connect_from_config to connect.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to config YAML file "
-                                   "(default: config.yaml in repo root)",
-                },
-            },
-        },
-    ),
-    Tool(
         name="list_connections",
-        description="List all configured connections from the loaded "
-                    "config file. Shows SSH and com2tcp entries.",
+        description="List all configured connections from config.yaml. "
+                    "Shows SSH and com2tcp entries.",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
-        name="connect_from_config",
-        description="Connect to a remote host using a named configuration "
-                    "from the config file. The config must be loaded first "
-                    "via load_config.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "config_name": {
-                    "type": "string",
-                    "description": "Name of the SSH connection in config file",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Session ID for the new connection "
-                                   "(default: uses config_name)",
-                },
-            },
-            "required": ["config_name"],
-        },
-    ),
-    Tool(
-        name="setup_com2tcp_from_config",
-        description="Run com2tcp setup using parameters from the config file. "
-                    "Looks up the named com2tcp config, uses its ssh reference "
-                    "to find the SSH connection, connects if needed, then "
-                    "uploads and starts com2tcp.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "config_name": {
-                    "type": "string",
-                    "description": "Name of the com2tcp config entry",
-                },
-            },
-            "required": ["config_name"],
-        },
+        name="save_config",
+        description="Save current in-memory configuration to config.yaml.",
+        inputSchema={"type": "object", "properties": {}},
     ),
     # ── Telnet Monitor ────────────────────────────────
     Tool(
@@ -458,26 +331,10 @@ async def call_tool(name: str, arguments: dict):
 
     try:
         if name == "ssh_connect":
-            result = await loop.run_in_executor(
-                None,
-                mgr.ssh_connect,
-                arguments["session_id"],
-                arguments["host"],
-                arguments.get("port", 22),
-                arguments["username"],
-                arguments["password"],
-                arguments.get("max_retries", 3),
-            )
-
-        elif name == "ssh_connect_key":
-            result = await loop.run_in_executor(
-                None,
-                mgr.ssh_connect_key,
-                arguments["session_id"],
-                arguments["host"],
-                arguments.get("port", 22),
-                arguments["username"],
-                arguments["key_file"],
+            config_name = arguments["config_name"]
+            session_id = arguments.get("session_id", config_name)
+            result = await _ssh_connect_from_config(
+                mgr, config_name, session_id,
                 arguments.get("max_retries", 3),
             )
 
@@ -528,20 +385,22 @@ async def call_tool(name: str, arguments: dict):
                 arguments.get("max_retries", 3),
             )
 
-        elif name == "telnet_execute":
-            result = await loop.run_in_executor(
-                None,
-                mgr.telnet_execute,
-                arguments["session_id"],
-                arguments["command"],
-                arguments.get("timeout", 5),
-            )
-
         elif name == "telnet_send":
-            result = mgr.telnet_send(
-                arguments["session_id"],
-                arguments["data"],
-            )
+            timeout = arguments.get("timeout", 0)
+            if timeout > 0:
+                result = await loop.run_in_executor(
+                    None,
+                    mgr.telnet_send,
+                    arguments["session_id"],
+                    arguments["data"],
+                    timeout,
+                )
+            else:
+                result = mgr.telnet_send(
+                    arguments["session_id"],
+                    arguments["data"],
+                    timeout,
+                )
 
         elif name == "telnet_listen":
             result = await loop.run_in_executor(
@@ -549,23 +408,6 @@ async def call_tool(name: str, arguments: dict):
                 mgr.telnet_listen,
                 arguments["session_id"],
                 arguments.get("duration", 10),
-                arguments.get("encoding", "utf-8"),
-            )
-
-        elif name == "telnet_read":
-            result = await loop.run_in_executor(
-                None,
-                mgr.telnet_read,
-                arguments["session_id"],
-                arguments.get("timeout", 3),
-                arguments.get("encoding", "utf-8"),
-            )
-
-        elif name == "telnet_read_all":
-            result = await loop.run_in_executor(
-                None,
-                mgr.telnet_read_all,
-                arguments["session_id"],
                 arguments.get("encoding", "utf-8"),
             )
 
@@ -596,22 +438,11 @@ async def call_tool(name: str, arguments: dict):
         elif name == "list_sessions":
             result = mgr.list_all()
 
-        elif name == "load_config":
-            result = await _load_config(arguments.get("path", "config.yaml"))
-
         elif name == "list_connections":
             result = await _list_connections()
 
-        elif name == "connect_from_config":
-            result = await _connect_from_config(
-                mgr, arguments["config_name"],
-                arguments.get("session_id", arguments["config_name"]),
-            )
-
-        elif name == "setup_com2tcp_from_config":
-            result = await _setup_com2tcp_from_config(
-                mgr, arguments["config_name"],
-            )
+        elif name == "save_config":
+            result = await _save_config()
 
         else:
             result = f"Unknown tool: {name}"
@@ -622,16 +453,32 @@ async def call_tool(name: str, arguments: dict):
         return [TextContent(type="text", text=f"Error in {name}: {e}")]
 
 
-async def _load_config(path: str) -> str:
+async def _ssh_connect_from_config(mgr, config_name: str,
+                                     session_id: str,
+                                     max_retries: int) -> str:
+    loop = asyncio.get_event_loop()
     try:
-        config = reload_config(path)
-        ssh_count = len(config.ssh_connections)
-        c2t_count = len(config.com2tcp_connections)
-        return (f"Config loaded: {path}\n"
-                f"  SSH connections: {ssh_count}\n"
-                f"  com2tcp entries: {c2t_count}")
+        config = get_config()
     except Exception as e:
         return f"Config load failed: {e}"
+
+    entry = config.get_ssh(config_name)
+    if not entry:
+        return f"SSH config '{config_name}' not found. Use list_connections."
+
+    if entry.key_file:
+        result = await loop.run_in_executor(
+            None, mgr.ssh_connect_key,
+            session_id, entry.host, entry.port,
+            entry.username, entry.key_file, max_retries,
+        )
+    else:
+        result = await loop.run_in_executor(
+            None, mgr.ssh_connect,
+            session_id, entry.host, entry.port,
+            entry.username, entry.password, max_retries,
+        )
+    return result
 
 
 async def _list_connections() -> str:
@@ -660,68 +507,13 @@ async def _list_connections() -> str:
     return "\n".join(lines)
 
 
-async def _connect_from_config(mgr, config_name: str,
-                                session_id: str) -> str:
-    loop = asyncio.get_event_loop()
+async def _save_config() -> str:
     try:
         config = get_config()
+        result = save_config(config)
+        return result
     except Exception as e:
-        return f"Config not loaded: {e}"
-
-    entry = config.get_ssh(config_name)
-    if not entry:
-        return f"SSH config '{config_name}' not found"
-
-    result = await loop.run_in_executor(
-        None, mgr.ssh_connect,
-        session_id, entry.host, entry.port,
-        entry.username, entry.password, 3,
-    )
-    return result
-
-
-async def _setup_com2tcp_from_config(mgr, config_name: str) -> str:
-    loop = asyncio.get_event_loop()
-    try:
-        config = get_config()
-    except Exception as e:
-        return f"Config not loaded: {e}"
-
-    entry = config.get_com2tcp(config_name)
-    if not entry:
-        return f"com2tcp config '{config_name}' not found"
-
-    ssh_entry = config.get_ssh(entry.ssh)
-    if not ssh_entry:
-        return f"Referenced SSH config '{entry.ssh}' not found"
-
-    parts = [
-        f"=== com2tcp from config ===",
-        f"Config      : {config_name}",
-        f"SSH target  : {entry.ssh} ({ssh_entry.username}@{ssh_entry.host}:{ssh_entry.port})",
-        f"COM port    : {entry.com_port}",
-        f"Telnet port : {entry.telnet_port}",
-        f"Baud rate   : {entry.baud}",
-        "",
-    ]
-
-    ssh_sid = f"cfg_{ssh_entry.name}"
-    r = await loop.run_in_executor(
-        None, mgr.ssh_connect,
-        ssh_sid, ssh_entry.host, ssh_entry.port,
-        ssh_entry.username, ssh_entry.password, 3,
-    )
-    parts.append(f"[SSH] {r}")
-
-    if "connected" not in r:
-        return "\n".join(parts)
-
-    result = await _setup_com2tcp(
-        mgr, ssh_sid, entry.com_port,
-        entry.telnet_port, entry.baud,
-    )
-    parts.append(result)
-    return "\n".join(parts)
+        return f"Save config failed: {e}"
 
 
 async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,

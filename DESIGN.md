@@ -16,7 +16,7 @@
 │              remote-debug-mcp                     │
 │  ┌───────────────────────────────────────────┐  │
 │  │              server.py                     │  │
-│  │   • 23 MCP 工具定义 & 注册                 │  │
+│  │   • 17 MCP 工具定义 & 注册                 │  │
 │  │   • call_tool 分发 → SessionManager        │  │
 │  └─────────────────┬─────────────────────────┘  │
 │                    │                              │
@@ -152,12 +152,7 @@ Linux 流程:
 
 **SFTP 自动创建目录**：上传时若父目录不存在，SFTP 自动逐级 `mkdir` 创建（UTF-8 编码，兼容中文目录名）。
 
-**Windows 中文目录兼容性**：
-
-| 目录创建方式 | SCP | SFTP | 说明 |
-|------------|-----|------|------|
-| SFTP mkdir（UTF-8） | ✅ | ✅ | 完全兼容，代码自动处理 |
-| PowerShell/CMD 创建（GBK） | ✅ | ❌ | SFTP 无法读取 GBK 编码目录名，Windows OpenSSH 限制 |
+**MD5 校验**：上传/下载完成后自动计算本地与远程文件 MD5 并比较，结果以 `[MD5 OK: xxx]` / `[MD5 MISMATCH!]` / `[(MD5 verify skipped)]` 格式追加到传输结果尾部。
 
 ### 3.4 自动重连
 
@@ -204,7 +199,7 @@ spawn('telnet', [host, port])
 @dataclass
 class TelnetSession:
     ...
-    buffer: str = ""              # 循环缓冲区
+    buffer: bytes = b""            # 循环缓冲区
     buffer_max_size: int = 65536  # 64KB 默认，可配置
     read_cursor: int = 0          # 读指针（已消费位置）
 ```
@@ -214,21 +209,17 @@ class TelnetSession:
 ```
 远程串口 ──continuous──▶ com2tcp ──telnet──▶ TelnetSession.buffer
                                                     │
-                          telnet_listen(duration)    │
+                          telnet_listen(duration)   │
                           ◄──────────────────────────┘
                           返回 buffer[read_cursor:] （新数据）
-                          read_cursor 移到末尾
-
-                          telnet_read_all()
-                          返回 buffer[:] （全部数据）
                           read_cursor 移到末尾
 ```
 
 | 工具 | 行为 | 移动 cursor |
 |------|------|------------|
 | `telnet_listen` | 监听 duration 秒，返回期间收到的新数据 | 是 |
-| `telnet_read` | 读取缓冲中上次消费之后的新数据 | 是 |
-| `telnet_read_all` | 返回缓冲区全部内容（含历史） | 是 |
+
+`telnet_read` / `telnet_read_all` 已删除，合并为 `telnet_listen` 覆盖。`telnet_send` 合并了 `telnet_execute`：`timeout=0` 发后即返，`timeout>0` 发后等响应。
 
 ### 4.3 二进制数据处理
 
@@ -384,28 +375,24 @@ SSH connection failed [myssh]: Authentication failed
 
 ## 9. MCP 工具清单
 
-### SSH (7 个)
+### SSH (6 个)
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
-| `ssh_connect` | 密码连接 | session_id, host, port, username, password |
-| `ssh_connect_key` | 密钥连接 | session_id, host, port, username, key_file |
+| `ssh_connect` | 通过 config_name 从 config.yaml 读取参数连接（密码/密钥自适应） | session_id, config_name |
 | `ssh_execute` | 执行命令（自动适配 bash/PowerShell，中文编码正确） | session_id, command, timeout |
-| `ssh_upload` | SCP 上传（自动降级 SFTP，空格兼容，中文目录自动 mkdir） | session_id, local_path, remote_path |
-| `ssh_download` | SCP 下载（自动降级 SFTP，空格兼容） | session_id, remote_path, local_path |
+| `ssh_upload` | SCP 上传（自动降级 SFTP，空格兼容，中文目录自动 mkdir，MD5 校验） | session_id, local_path, remote_path |
+| `ssh_download` | SCP 下载（自动降级 SFTP，空格兼容，MD5 校验） | session_id, remote_path, local_path |
 | `ssh_disconnect` | 关闭会话 | session_id |
 | `ssh_list` | 列出会话 | — |
 
-### Telnet (10 个)
+### Telnet (7 个)
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
 | `telnet_connect` | 连接 | session_id, host, port, username?, password? |
-| `telnet_execute` | 发送命令+读响应 | session_id, command, timeout |
-| `telnet_send` | 发送原始数据（支持 `__CTRL_C__`/`__CTRL_Z__`/`__CTRL_D__`） | session_id, data |
+| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；支持 `__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`） | session_id, data, timeout |
 | `telnet_listen` | 监听新数据 | session_id, duration |
-| `telnet_read` | 读取新数据（消费） | session_id, timeout |
-| `telnet_read_all` | 读取全部缓冲（消费） | session_id |
 | `telnet_start_monitor` | 启动后台持续监听，可选文件输出 | session_id, output_file? |
 | `telnet_stop_monitor` | 停止后台监听 | session_id |
 | `telnet_disconnect` | 关闭会话 | session_id |
@@ -417,14 +404,12 @@ SSH connection failed [myssh]: Authentication failed
 |------|------|
 | `setup_com2tcp` | SSH 上传 + 后台启动 com2tcp，返回 telnet 连接信息 |
 
-### 配置 (4 个)
+### 配置 (2 个)
 
 | 工具 | 说明 |
 |------|------|
-| `load_config` | 加载 YAML 配置文件 |
-| `list_connections` | 列出配置中的所有连接 |
-| `connect_from_config` | 按名称一键 SSH 连接 |
-| `setup_com2tcp_from_config` | 按名称一键 com2tcp 部署 |
+| `list_connections` | 列出已加载配置中的所有连接 |
+| `save_config` | 保存当前内存配置到 config.yaml |
 
 ### 通用 (1 个)
 
@@ -432,7 +417,7 @@ SSH connection failed [myssh]: Authentication failed
 |------|------|
 | `list_sessions` | 列出所有 SSH 和 Telnet 会话 |
 
-**总计: 23 个工具**
+**总计: 17 个工具**
 
 ---
 

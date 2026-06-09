@@ -1,5 +1,6 @@
 import os
 import time
+import hashlib
 import base64
 import threading
 from collections import deque
@@ -404,6 +405,55 @@ class SessionManager:
                 remote_path = "/" + remote_path
         return remote_path
 
+    def _denormalize_for_md5(self, session: SSHSession,
+                              remote_path: str) -> str:
+        """将 SCP 归一化路径转回远程平台原生格式，供 MD5 命令使用。"""
+        if session.platform == "windows":
+            if remote_path.startswith("/") and len(remote_path) > 3:
+                if remote_path[1].isalpha() and remote_path[2] == ":":
+                    native = remote_path[1:]  # /D:/... → D:/...
+                    native = native.replace("/", "\\")
+                    return native
+            return remote_path.replace("/", "\\")
+        return remote_path
+
+    @staticmethod
+    def _compute_local_md5(file_path: str) -> str:
+        with open(file_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    def _compute_remote_md5(self, session: SSHSession,
+                             remote_path: str) -> Optional[str]:
+        native_path = self._denormalize_for_md5(session, remote_path)
+        if session.platform == "windows":
+            cmd = (f"Get-FileHash -Path \"{native_path}\""
+                   f" -Algorithm MD5 | Select-Object -ExpandProperty Hash")
+        else:
+            cmd = f"md5sum \"{native_path}\" | cut -d' ' -f1"
+
+        try:
+            output = self._ssh_execute_inner(session, cmd, timeout=15)
+            output = output.strip().upper()
+            if len(output) >= 32:
+                hash_val = output[:32].strip()
+                if all(c in "0123456789ABCDEF" for c in hash_val):
+                    return hash_val
+            return None
+        except Exception:
+            return None
+
+    def _verify_md5(self, session: SSHSession, local_path: str,
+                    remote_path: str) -> str:
+        local_md5 = self._compute_local_md5(local_path).upper()
+        remote_md5 = self._compute_remote_md5(session, remote_path)
+        if remote_md5 is None:
+            return (f"(MD5 verify skipped: cannot read remote hash) "
+                    f"local={local_md5}")
+        if local_md5 == remote_md5:
+            return f"MD5 OK: {local_md5}"
+        else:
+            return f"MD5 MISMATCH! local={local_md5} remote={remote_md5}"
+
     def ssh_upload(self, session_id: str, local_path: str,
                    remote_path: str) -> str:
         session = self._ssh_sessions.get(session_id)
@@ -412,6 +462,7 @@ class SessionManager:
         if not os.path.exists(local_path):
             return f"Local file not found: {local_path}"
 
+        native_remote = remote_path
         remote_path = self._normalize_remote_path(session, remote_path)
 
         result = self._scp_transfer(
@@ -419,11 +470,13 @@ class SessionManager:
             f"{session.params.username}@{session.params.host}:{remote_path}",
         )
         if "OK" in result:
-            return result
+            md5 = self._verify_md5(session, local_path, native_remote)
+            return f"{result} [{md5}]"
 
         result2 = self._sftp_transfer(session, local_path, remote_path, put=True)
         if "OK" in result2:
-            return result2
+            md5 = self._verify_md5(session, local_path, native_remote)
+            return f"{result2} [{md5}]"
 
         return f"SSH upload failed [{session_id}]: SCP({result}) / SFTP({result2})"
 
@@ -433,6 +486,7 @@ class SessionManager:
         if not session:
             return f"SSH session not found: {session_id}"
 
+        native_remote = remote_path
         remote_path = self._normalize_remote_path(session, remote_path)
 
         result = self._scp_transfer(
@@ -441,11 +495,13 @@ class SessionManager:
             local_path,
         )
         if "OK" in result:
-            return result
+            md5 = self._verify_md5(session, local_path, native_remote)
+            return f"{result} [{md5}]"
 
         result2 = self._sftp_transfer(session, local_path, remote_path, put=False)
         if "OK" in result2:
-            return result2
+            md5 = self._verify_md5(session, local_path, native_remote)
+            return f"{result2} [{md5}]"
 
         return f"SSH download failed [{session_id}]: SCP({result}) / SFTP({result2})"
 
@@ -670,47 +726,37 @@ class SessionManager:
         else:
             return data.decode(encoding, errors="replace")
 
-    def telnet_execute(self, session_id: str, command: str,
-                       timeout: int = 5) -> str:
-        session = self._telnet_sessions.get(session_id)
-        if not session or not session.connected:
-            return f"Telnet session not found or not connected: {session_id}"
-
-        try:
-            child = session.child
-            child.sendline(command)
-            child.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=timeout)
-            output = child.before
-            if output is None:
-                return ""
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", errors="replace")
-            return output.replace("\r\n", "\n").strip()
-        except (pexpect.EOF, OSError) as e:
-            return self._try_reconnect_telnet(session, str(e))
-        except Exception as e:
-            session.connected = False
-            session.last_error = str(e)
-            return f"Telnet execute error [{session_id}]: {e}"
-
-    def telnet_send(self, session_id: str, data: str) -> str:
+    def telnet_send(self, session_id: str, data: str,
+                    timeout: int = 0) -> str:
         session = self._telnet_sessions.get(session_id)
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
         try:
             with session.io_lock:
                 if data == "__CTRL_C__":
-                    session.child.send("\x03")
+                    os.write(session.child.child_fd, b"\x03")
                 elif data == "__CTRL_D__":
-                    session.child.send("\x04")
+                    os.write(session.child.child_fd, b"\x04")
                 elif data == "__CTRL_Z__":
-                    session.child.send("\x1a")
+                    os.write(session.child.child_fd, b"\x1a")
                 else:
                     session.child.send(data)
-            return f"Data sent to [{session_id}]"
+
+            if timeout <= 0:
+                return f"Data sent to [{session_id}]"
+
+            session.child.expect([pexpect.TIMEOUT, pexpect.EOF],
+                                  timeout=timeout)
+            output = session.child.before
+            if output is None:
+                return ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            return output.replace("\r\n", "\n").strip()
         except (pexpect.EOF, OSError) as e:
-            self._try_reconnect_telnet(session, str(e), silent=True)
-            return f"Data sent to [{session_id}] (reconnected)"
+            self._try_reconnect_telnet(session, str(e), silent=(timeout <= 0))
+            return (f"Telnet send [{session_id}]: reconnected "
+                    f"after {session.reconnect_count} retries")
         except Exception as e:
             session.connected = False
             session.last_error = str(e)
@@ -750,63 +796,6 @@ class SessionManager:
             return f"Telnet connection lost [{session_id}]: {e}"
         except Exception as e:
             return f"Telnet listen error [{session_id}]: {e}"
-
-    def telnet_read(self, session_id: str, timeout: int = 3,
-                     encoding: str = "utf-8") -> str:
-        session = self._telnet_sessions.get(session_id)
-        if not session or not session.connected:
-            return f"Telnet session not found or not connected: {session_id}"
-
-        try:
-            if not session.monitor_active:
-                child = session.child
-                end_time = time.time() + timeout
-                while time.time() < end_time:
-                    remaining = max(0.1, end_time - time.time())
-                    data = self._telnet_expect_data(child, remaining)
-                    if data:
-                        self._append_to_buffer(session, data)
-                        self._append_to_lines(session, data)
-                    else:
-                        break
-
-                result = self._read_new_data(session, encoding)
-            else:
-                time.sleep(min(timeout, 1))
-                new_lines = list(session.lines)[session.read_line_cursor:]
-                session.read_line_cursor = len(session.lines)
-                result = self._encode_lines(new_lines, encoding)
-            return result if result else "(no new data)"
-        except (pexpect.EOF, OSError) as e:
-            partial = self._read_new_data(session, encoding)
-            return partial if partial else f"Telnet connection lost [{session_id}]: {e}"
-        except Exception as e:
-            return f"Telnet read error [{session_id}]: {e}"
-
-    def telnet_read_all(self, session_id: str,
-                         encoding: str = "utf-8") -> str:
-        session = self._telnet_sessions.get(session_id)
-        if not session or not session.connected:
-            return f"Telnet session not found or not connected: {session_id}"
-
-        try:
-            if not session.monitor_active:
-                child = session.child
-                while True:
-                    data = self._telnet_expect_data(child, 0.5)
-                    if data:
-                        self._append_to_buffer(session, data)
-                        self._append_to_lines(session, data)
-                    else:
-                        break
-                result = self._read_all_data(session, encoding)
-            else:
-                all_lines = list(session.lines)
-                session.read_line_cursor = len(session.lines)
-                result = self._encode_lines(all_lines, encoding)
-            return result if result else "(no data in buffer)"
-        except Exception as e:
-            return f"Telnet read_all error [{session_id}]: {e}"
 
     def _append_to_lines(self, session: TelnetSession, data: bytes):
         """将原始字节数据拆行追加到行列缓存。"""
