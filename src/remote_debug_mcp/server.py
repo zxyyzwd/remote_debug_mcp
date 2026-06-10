@@ -6,7 +6,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from remote_debug_mcp.sessions import get_manager
-from remote_debug_mcp.config_loader import load_config, get_config, reload_config, save_config
+from remote_debug_mcp.config_loader import (
+    load_config, get_config, reload_config, save_config,
+)
 
 server = Server("remote-debug-mcp")
 
@@ -115,46 +117,28 @@ TOOLS = [
     Tool(
         name="telnet_connect",
         description="Connect to remote host via Telnet, persistent background "
-                    "session. Supports optional login. Maintains an internal "
-                    "buffer for accumulated data (configurable size).",
+                    "session. All connection parameters come from the com2tcp "
+                    "config in config.yaml.\n\n"
+                    "Look up com2tcp config by name, resolve host from linked "
+                    "SSH config, and use configured telnet_port, timeout, "
+                    "buffer settings, and auto-reconnect policy.\n\n"
+                    "Use list_connections to see available configs. "
+                    "Use save_config to create/update com2tcp entries.",
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "Unique session ID",
+                    "description": "Unique session ID (reusing overwrites old)",
                 },
-                "host": {"type": "string", "description": "Remote host IP/hostname"},
-                "port": {
-                    "type": "integer",
-                    "description": "Telnet port (default 23)",
-                    "default": 23,
-                },
-                "username": {
+                "config_name": {
                     "type": "string",
-                    "description": "Login username (optional)",
-                },
-                "password": {
-                    "type": "string",
-                    "description": "Login password (optional)",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Connection timeout seconds (default 15)",
-                    "default": 15,
-                },
-                "buffer_max_size": {
-                    "type": "integer",
-                    "description": "Max buffer size in bytes (default 65536 = 64KB)",
-                    "default": 65536,
-                },
-                "max_retries": {
-                    "type": "integer",
-                    "description": "Max auto-reconnect attempts (default 3)",
-                    "default": 3,
+                    "description": "Name of the com2tcp config in config.yaml "
+                                   "(e.g. 'com2tcp_COM4_5200'). All connection "
+                                   "params are read from this config.",
                 },
             },
-            "required": ["session_id", "host"],
+            "required": ["session_id", "config_name"],
         },
     ),
     Tool(
@@ -269,8 +253,47 @@ TOOLS = [
     ),
     Tool(
         name="save_config",
-        description="Save current in-memory configuration to config.yaml.",
-        inputSchema={"type": "object", "properties": {}},
+        description="Save configuration to config.yaml. "
+                    "This is the unified entry for creating/updating connection configs. "
+                    "When no config.yaml exists: ask user for connection details "
+                    "(host, port, username, password for SSH; ssh_config_name, com_port, "
+                    "telnet_port for com2tcp), then call this tool with 'connections' parameter. "
+                    "When setup_com2tcp completes, call this tool with the com2tcp connection "
+                    "details to persist them. "
+                    "When called without arguments, saves current in-memory config.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "connections": {
+                    "type": "array",
+                    "description": "Connections to save/merge. "
+                                  "type=ssh: {name, host, port, username, password, key_file?}. "
+                                  "type=com2tcp: {name, ssh, com_port, telnet_port, baud, "
+                                  "connect_timeout?, buffer_max_size?, max_retries?, username?, password?}. "
+                                  "Omit to save current in-memory config.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Connection name"},
+                            "type": {"type": "string", "enum": ["ssh", "com2tcp"]},
+                            "host": {"type": "string"},
+                            "port": {"type": "integer"},
+                            "username": {"type": "string"},
+                            "password": {"type": "string"},
+                            "key_file": {"type": "string"},
+                            "ssh": {"type": "string", "description": "SSH config name (com2tcp only)"},
+                            "com_port": {"type": "string", "description": "COM port name (com2tcp only)"},
+                            "telnet_port": {"type": "integer", "description": "Telnet port (com2tcp only)"},
+                            "baud": {"type": "integer", "description": "Baud rate (com2tcp only)"},
+                            "connect_timeout": {"type": "integer", "description": "Connect timeout seconds (com2tcp, default 15)"},
+                            "buffer_max_size": {"type": "integer", "description": "Buffer max size bytes (com2tcp, default 65536)"},
+                            "max_retries": {"type": "integer", "description": "Max auto-reconnect attempts (com2tcp, default 3)"},
+                        },
+                        "required": ["name", "type"],
+                    },
+                },
+            },
+        },
     ),
     # ── Telnet Monitor ────────────────────────────────
     Tool(
@@ -372,17 +395,19 @@ async def call_tool(name: str, arguments: dict):
             result = mgr.ssh_list()
 
         elif name == "telnet_connect":
+            host, port, username, password, timeout, buf_size, retries = \
+                _resolve_telnet_config(arguments["config_name"])
             result = await loop.run_in_executor(
                 None,
                 mgr.telnet_connect,
                 arguments["session_id"],
-                arguments["host"],
-                arguments.get("port", 23),
-                arguments.get("username", ""),
-                arguments.get("password", ""),
-                arguments.get("timeout", 15),
-                arguments.get("buffer_max_size", 65536),
-                arguments.get("max_retries", 3),
+                host,
+                port,
+                username,
+                password,
+                timeout,
+                buf_size,
+                retries,
             )
 
         elif name == "telnet_send":
@@ -442,7 +467,7 @@ async def call_tool(name: str, arguments: dict):
             result = await _list_connections()
 
         elif name == "save_config":
-            result = await _save_config()
+            result = await _save_config(arguments.get("connections"))
 
         else:
             result = f"Unknown tool: {name}"
@@ -498,18 +523,102 @@ async def _list_connections() -> str:
     if config.com2tcp_connections:
         lines.append("\n[com2tcp]")
         for c in config.com2tcp_connections:
+            extra = []
+            if c.username:
+                extra.append(f"login={c.username}")
+            if c.connect_timeout != 15:
+                extra.append(f"timeout={c.connect_timeout}s")
+            if c.buffer_max_size != 65536:
+                extra.append(f"buf={c.buffer_max_size}")
+            if c.max_retries != 3:
+                extra.append(f"retries={c.max_retries}")
+            extra_str = " " + " ".join(extra) if extra else ""
             lines.append(
                 f"  {c.name}: SSH={c.ssh} COM={c.com_port} "
-                f"telnet=:{c.telnet_port} baud={c.baud}"
+                f"telnet=:{c.telnet_port} baud={c.baud}{extra_str}"
             )
     if not config.ssh_connections and not config.com2tcp_connections:
         lines.append("  (none)")
     return "\n".join(lines)
 
 
-async def _save_config() -> str:
+def _resolve_telnet_config(config_name: str):
+    """从 com2tcp 配置解析全部连接参数。
+    返回 (host, port, username, password, timeout, buffer_max_size, max_retries)。"""
+    config = get_config()
+    c2t = config.get_com2tcp(config_name)
+    if not c2t:
+        raise ValueError(
+            f"com2tcp config '{config_name}' not found. "
+            f"Use list_connections to see available configs."
+        )
+    ssh_cfg = config.get_ssh(c2t.ssh)
+    if not ssh_cfg:
+        raise ValueError(
+            f"SSH config '{c2t.ssh}' (referenced by com2tcp '{config_name}') "
+            f"not found. Check config.yaml."
+        )
+    return (ssh_cfg.host, c2t.telnet_port, c2t.username, c2t.password,
+            c2t.connect_timeout, c2t.buffer_max_size, c2t.max_retries)
+
+
+async def _save_config(connections=None) -> str:
+    from remote_debug_mcp.config_loader import AppConfig, SSHConfig, Com2TcpConfig
+
     try:
-        config = get_config()
+        try:
+            config = get_config()
+        except FileNotFoundError:
+            config = AppConfig()
+
+        if connections:
+            for c in connections:
+                entry_type = c.get("type", "ssh")
+                if entry_type == "ssh":
+                    ssh_cfg = SSHConfig(
+                        name=c.get("name", ""),
+                        host=c.get("host", ""),
+                        port=c.get("port", 22),
+                        username=c.get("username", ""),
+                        password=c.get("password", ""),
+                        key_file=c.get("key_file", ""),
+                    )
+                    existing = config.get_ssh(ssh_cfg.name)
+                    if existing:
+                        existing.host = ssh_cfg.host
+                        existing.port = ssh_cfg.port
+                        existing.username = ssh_cfg.username
+                        existing.password = ssh_cfg.password
+                        existing.key_file = ssh_cfg.key_file
+                    else:
+                        config.ssh_connections.append(ssh_cfg)
+                elif entry_type == "com2tcp":
+                    c2t_cfg = Com2TcpConfig(
+                        name=c.get("name", ""),
+                        ssh=c.get("ssh", ""),
+                        com_port=c.get("com_port", ""),
+                        telnet_port=c.get("telnet_port", 5200),
+                        baud=c.get("baud", 115200),
+                        username=c.get("username", ""),
+                        password=c.get("password", ""),
+                        connect_timeout=c.get("connect_timeout", 15),
+                        buffer_max_size=c.get("buffer_max_size", 65536),
+                        max_retries=c.get("max_retries", 3),
+                    )
+                    existing = config.get_com2tcp(c2t_cfg.name)
+                    if existing:
+                        existing.ssh = c2t_cfg.ssh
+                        existing.com_port = c2t_cfg.com_port
+                        existing.telnet_port = c2t_cfg.telnet_port
+                        existing.baud = c2t_cfg.baud
+                        existing.username = c2t_cfg.username
+                        existing.password = c2t_cfg.password
+                        existing.connect_timeout = c2t_cfg.connect_timeout
+                        existing.buffer_max_size = c2t_cfg.buffer_max_size
+                        existing.max_retries = c2t_cfg.max_retries
+                    else:
+                        config.com2tcp_connections.append(c2t_cfg)
+
         result = save_config(config)
         return result
     except Exception as e:
@@ -586,8 +695,15 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
 
     parts.append("")
     parts.append("=== Setup complete ===")
-    parts.append(f"Telnet: telnet_connect(session_id='com2tcp_{telnet_port}', "
-                 f"host='{host}', port={telnet_port})")
+    parts.append(f"Connect: telnet_connect(session_id='serial', "
+                 f"config_name='com2tcp_{com_port}_{telnet_port}')")
+    parts.append("")
+    parts.append("IMPORTANT: To persist this com2tcp config, call save_config with:")
+    s = (f"  connections=[{{\"name\":\"com2tcp_{com_port}_{telnet_port}\","
+         f"\"type\":\"com2tcp\",\"ssh\":\"<your-ssh-config-name>\","
+         f"\"com_port\":\"{com_port}\",\"telnet_port\":{telnet_port},"
+         f"\"baud\":{baud}}}]")
+    parts.append(s)
 
     return "\n".join(parts)
 

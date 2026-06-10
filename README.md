@@ -105,10 +105,16 @@ connections:
   # ── 串口映射 ──────────────────────
   - name: "serial-com4"        # com2tcp 桥接配置
     type: com2tcp
-    ssh: "office-pc"           # 引用上面的 SSH 连接名
+    ssh: "office-pc"           # 引用上面的 SSH 连接名（用于解析 host）
     com_port: "COM4"           # Windows COM 口
     telnet_port: 5200          # 暴露的 Telnet 端口
     baud: 115200               # 波特率（默认 115200）
+    # 以下为可选参数（均有默认值）
+    # username: ""             # Telnet 登录用户名
+    # password: ""             # Telnet 登录密码
+    # connect_timeout: 15      # 连接超时（秒）
+    # buffer_max_size: 65536   # 缓冲区大小（字节，默认 64KB）
+    # max_retries: 3           # 自动重连次数
 ```
 
 使用：
@@ -116,7 +122,8 @@ connections:
 ```
 ssh_connect → config_name: "office-pc"            # 自动从 config.yaml 读参数连接
 list_connections                                   # 查看已加载的配置
-save_config                                        # 持久化当前内存配置到文件
+save_config                                        # 保存当前内存配置
+save_config → connections: [{...}]                 # 创建/更新配置条目（无配置文件时的唯一入库入口）
 ```
 
 ## com2tcp 串口调试工作流
@@ -133,10 +140,11 @@ save_config                                        # 持久化当前内存配置
 ```
 1. ssh_connect → config_name: "office-pc"    # SSH 到 Windows PC
 2. setup_com2tcp → ssh_session_id: "...", com_port: "COM4", telnet_port: 5200
-3. telnet_connect → host: "192.168.1.16", port: 5200
-4. telnet_send → data: "ls\n", timeout: 3
-5. telnet_listen → duration: 10
-6. telnet_start_monitor → output_file: "serial.log"  # 后台持续记录
+3. save_config → connections: [{name: "serial-com4", type: "com2tcp", ...}]  # 持久化配置
+4. telnet_connect → session_id: "serial", config_name: "serial-com4"         # 所有参数从配置解析
+5. telnet_send → data: "ls", timeout: 3
+6. telnet_listen → duration: 10
+7. telnet_start_monitor → output_file: "serial.log"  # 后台持续记录
 ```
 
 ## 工具参考
@@ -152,30 +160,40 @@ save_config                                        # 持久化当前内存配置
 | `ssh_disconnect` | 关闭会话 |
 | `ssh_list` | 列出所有 SSH 会话 |
 
-### Telnet（7 个）
+### Telnet（5 个）
 
 | 工具 | 说明 |
 |------|------|
-| `telnet_connect` | 连接（可选用户名/密码，可配缓冲区） |
+| `telnet_connect` | 通过 config_name 连接（host/port/login/buffer/retries 全从配置解析） |
 | `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；`__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`） |
-| `telnet_listen` | 监听指定秒数，返回新数据 |
-| `telnet_start_monitor` | 启动后台持续监听（可选持续写入文件） |
-| `telnet_stop_monitor` | 停止后台监听，返回累计行数 |
+| `telnet_listen` | 监听指定秒数，返回新数据（支持 utf-8/base64/hex 编码） |
 | `telnet_disconnect` | 关闭会话 |
 | `telnet_list` | 列出所有 Telnet 会话 |
+
+### Telnet 监控（2 个）
+
+| 工具 | 说明 |
+|------|------|
+| `telnet_start_monitor` | 启动后台持续监听（可选持续写入文件） |
+| `telnet_stop_monitor` | 停止后台监听，返回累计行数 |
 
 ### 配置（2 个）
 
 | 工具 | 说明 |
 |------|------|
-| `list_connections` | 列出已加载配置中的所有连接 |
-| `save_config` | 保存当前内存配置到 config.yaml |
+| `list_connections` | 列出已加载配置中的所有 SSH 和 com2tcp 连接 |
+| `save_config` | **配置唯一入库入口**：无参保存内存配置；带 `connections` 参数创建/更新条目后写入文件 |
 
-### 通用（2 个）
+### 工作流（1 个）
 
 | 工具 | 说明 |
 |------|------|
-| `setup_com2tcp` | 手动 com2tcp 工作流（上传 + 启动 + 验证） |
+| `setup_com2tcp` | 完整 com2tcp 工作流（上传 + 启动 + 验证），完成后提示调 `save_config` 持久化 |
+
+### 通用（1 个）
+
+| 工具 | 说明 |
+|------|------|
 | `list_sessions` | 列出所有 SSH + Telnet 会话 |
 
 ## 架构

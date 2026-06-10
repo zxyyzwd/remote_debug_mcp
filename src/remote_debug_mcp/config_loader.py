@@ -24,6 +24,11 @@ class Com2TcpConfig:
     com_port: str
     telnet_port: int = 5200
     baud: int = 115200
+    username: str = ""
+    password: str = ""
+    connect_timeout: int = 15
+    buffer_max_size: int = 65536
+    max_retries: int = 3
 
 
 @dataclass
@@ -111,6 +116,11 @@ def _add_entry(config: AppConfig, entry: dict):
             com_port=entry.get("com_port", ""),
             telnet_port=entry.get("telnet_port", 5200),
             baud=entry.get("baud", 115200),
+            username=entry.get("username", ""),
+            password=entry.get("password", ""),
+            connect_timeout=entry.get("connect_timeout", 15),
+            buffer_max_size=entry.get("buffer_max_size", 65536),
+            max_retries=entry.get("max_retries", 3),
         ))
 
 
@@ -164,6 +174,16 @@ def _build_yaml(config: AppConfig) -> str:
         lines.append(f"    com_port: \"{c.com_port}\"")
         lines.append(f"    telnet_port: {c.telnet_port}")
         lines.append(f"    baud: {c.baud}")
+        if c.username:
+            lines.append(f"    username: \"{c.username}\"")
+        if c.password:
+            lines.append(f"    password: \"{c.password}\"")
+        if c.connect_timeout != 15:
+            lines.append(f"    connect_timeout: {c.connect_timeout}")
+        if c.buffer_max_size != 65536:
+            lines.append(f"    buffer_max_size: {c.buffer_max_size}")
+        if c.max_retries != 3:
+            lines.append(f"    max_retries: {c.max_retries}")
         lines.append("")
     return "\n".join(lines) + "\n"
 

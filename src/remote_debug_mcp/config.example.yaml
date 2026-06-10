@@ -1,5 +1,11 @@
 # 远程调试连接配置文件（示例）
 # 复制为 config.yaml 并填入真实参数
+#
+# save_config 工具是配置唯一入库入口：
+#   - 无参调用：保存当前内存配置到文件
+#   - 带 connections 参数：合并条目后写入文件
+#   - 无配置文件时：LLM 询问用户参数，调用 save_config 创建
+#   - setup_com2tcp 完成后：LLM 调用 save_config 持久化 com2tcp 配置
 
 connections:
   - name: "my-pc"
@@ -8,10 +14,17 @@ connections:
     port: 22
     username: "your-username"
     password: "your-password"
+    # key_file: "/path/to/key"  # 可选，密钥认证
 
-  - name: "my-serial"
+  - name: "com2tcp_COM4_5200"
     type: com2tcp
-    ssh: "my-pc"
+    ssh: "my-pc"           # 关联的 SSH 配置名（用于解析 host）
     com_port: "COM4"
     telnet_port: 5200
     baud: 115200
+    # 以下为可选参数（均有默认值）
+    # username: ""          # Telnet 登录用户名
+    # password: ""          # Telnet 登录密码
+    # connect_timeout: 15   # 连接超时（秒）
+    # buffer_max_size: 65536  # 缓冲区大小（字节，默认 64KB）
+    # max_retries: 3        # 自动重连次数
