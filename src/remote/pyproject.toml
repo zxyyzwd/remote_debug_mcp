@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-debug-tools"
+version = "0.1.0"
+description = "Remote debugging tools for serial port and telnet bridging"
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[project.scripts]
+com2telnet = "com2telnet:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["com2telnet.py"]

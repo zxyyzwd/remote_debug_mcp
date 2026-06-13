@@ -86,7 +86,7 @@ def _parse_yaml_simple(content: str) -> AppConfig:
             if "#" in val:
                 val = val[:val.index("#")].strip()
             val = val.strip('"').strip("'")
-            if key in ("port", "telnet_port", "baud"):
+            if key in ("port", "telnet_port", "baud", "connect_timeout", "buffer_max_size", "max_retries"):
                 current_entry[key] = int(val) if val else 0
             else:
                 current_entry[key] = val
@@ -198,17 +198,6 @@ def save_config(config: AppConfig, path: str = "config.yaml") -> str:
     return (f"Config saved: {output_path}\n"
             f"  SSH connections: {ssh_count}\n"
             f"  com2tcp entries: {c2t_count}")
-    """返回 config.example.yaml 的路径（用于参考/复制）。"""
-    source_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.join(source_dir, "..", "..", "..")
-    search = [
-        os.path.join(source_dir, "config.example.yaml"),
-        os.path.join(repo_root, "config.example.yaml"),
-    ]
-    for p in search:
-        if os.path.exists(p):
-            return p
-    return "config.example.yaml (not found, check repo)"
 
 
 _config: Optional[AppConfig] = None

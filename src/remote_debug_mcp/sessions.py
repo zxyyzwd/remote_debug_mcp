@@ -37,6 +37,8 @@ class SSHSession:
     connected: bool = False
     reconnect_count: int = 0
     last_error: str = ""
+    powershell_available: bool = True
+    io_lock: threading.Lock = field(default_factory=threading.Lock)
     created_at: float = field(default_factory=time.time)
 
     def close(self):
@@ -143,7 +145,8 @@ class SessionManager:
 
         return child
 
-    def _detect_and_setup_prompt(self, child: pexpect.spawn) -> str:
+    def _detect_and_setup_prompt(self, child: pexpect.spawn,
+                                  session: SSHSession) -> str:
         """
         连接成功后检测远程平台，Windows 则设置工作目录。
         encoding=None，所有 I/O 操作用原始字节。
@@ -179,13 +182,38 @@ class SessionManager:
             pass
 
         if platform == "windows":
-            self._setup_windows_workspace(child)
+            if not self._setup_windows_workspace(child):
+                child.close()
+                session.powershell_available = False
+                child2 = self._ssh_spawn(session.params)
+                session.child = child2
+                session.platform = "windows"
+                time.sleep(0.3)
+                try:
+                    child2.read_nonblocking(99999, timeout=0.5)
+                except Exception:
+                    pass
+                child2.sendline(
+                    "mkdir D:\\remote_debug 2>nul & echo __WORKSPACE_READY__"
+                )
+                try:
+                    child2.expect("__WORKSPACE_READY__", timeout=10)
+                except (pexpect.TIMEOUT, pexpect.EOF):
+                    pass
+                time.sleep(0.3)
+                try:
+                    child2.read_nonblocking(99999, timeout=0.3)
+                except Exception:
+                    pass
+                return "windows"
 
         return platform
 
-    def _setup_windows_workspace(self, child: pexpect.spawn):
+    def _setup_windows_workspace(self, child: pexpect.spawn) -> bool:
         """
-        切换到 PowerShell 并创建 D:\\remote_debug 工作目录。
+        尝试切换到 PowerShell 并创建 D:\\remote_debug 工作目录。
+        返回 True 表示 PowerShell 可用且命令输出正常，
+        False 表示需要回退到 -t PTY 模式。
         """
         child.sendline("powershell")
         time.sleep(1.5)
@@ -194,11 +222,16 @@ class SessionManager:
         except Exception:
             pass
 
-        child.sendline("New-Item -ItemType Directory -Force -Path D:\\remote_debug | Out-Null; Set-Location D:\\remote_debug; echo __WORKSPACE_READY__")
+        child.sendline(
+            "New-Item -ItemType Directory -Force -Path D:\\remote_debug | Out-Null;"
+            " Set-Location D:\\remote_debug; echo __WORKSPACE_READY__"
+        )
         try:
             child.expect("__WORKSPACE_READY__", timeout=10)
         except pexpect.TIMEOUT:
             pass
+        except pexpect.EOF:
+            return False
 
         time.sleep(0.3)
         try:
@@ -206,11 +239,31 @@ class SessionManager:
         except Exception:
             pass
 
+        if not self._verify_shell(child):
+            return False
+        try:
+            child.read_nonblocking(99999, timeout=0.3)
+        except Exception:
+            pass
+        return True
+
+    def _verify_shell(self, child: pexpect.spawn) -> bool:
+        """发送 echo 验证 shell 是否正常产生实际输出（非仅命令回显）。
+        匹配 marker 两次：第一次是命令回显，第二次是 echo 的实际输出。"""
+        marker = "__MCP_ALIVE__"
+        child.sendline(f"echo {marker}")
+        try:
+            child.expect(marker, timeout=5)
+            child.expect(marker, timeout=3)
+            return True
+        except (pexpect.TIMEOUT, pexpect.EOF):
+            return False
+
     def _do_ssh_connect(self, session: SSHSession) -> str:
         try:
             child = self._ssh_spawn(session.params)
             session.child = child
-            session.platform = self._detect_and_setup_prompt(child)
+            session.platform = self._detect_and_setup_prompt(child, session)
             session.connected = True
             session.reconnect_count = 0
             session.last_error = ""
@@ -261,44 +314,52 @@ class SessionManager:
     # ================================================================
 
     def _ssh_execute_inner(self, session: SSHSession, command: str,
-                           timeout: int) -> str:
+                            timeout: int) -> str:
         child = session.child
         marker = f"__MCP_CMD_{int(time.time() * 1000)}__"
         marker_bytes = marker.encode("utf-8")
 
         full_cmd = f"{command}; echo {marker}"
         if session.platform == "windows":
+            if not session.powershell_available:
+                full_cmd = f"{command} & echo {marker}"
             full_cmd_bytes = full_cmd.encode("gbk", errors="replace")
         else:
             full_cmd_bytes = full_cmd.encode("utf-8")
 
-        try:
-            child.read_nonblocking(99999, timeout=0.3)
-        except Exception:
-            pass
-
-        child.send(full_cmd_bytes + b"\n")
-
-        deadline = time.time() + timeout
-        all_data = b""
-        marker_found = False
-
-        while time.time() < deadline:
-            time.sleep(0.3)
+        with session.io_lock:
             try:
-                chunk = child.read_nonblocking(99999, timeout=0.3)
-                if chunk:
-                    all_data += chunk
-                    if marker_bytes in all_data:
-                        marker_found = True
-                        break
-            except pexpect.TIMEOUT:
-                continue
-            except pexpect.EOF:
-                break
+                child.read_nonblocking(99999, timeout=0.3)
+            except Exception:
+                pass
 
-        if not marker_found:
-            return f"[TIMEOUT] Command exceeded {timeout}s: {command}"
+            if session.platform == "windows" and not session.powershell_available:
+                return self._ssh_execute_one_shot(session, command, marker, timeout)
+            else:
+                child.send(full_cmd_bytes + b"\n")
+
+            deadline = time.time() + timeout
+            all_data = b""
+            marker_found = False
+
+            target_hits = 1
+
+            while time.time() < deadline:
+                time.sleep(0.3)
+                try:
+                    chunk = child.read_nonblocking(99999, timeout=0.3)
+                    if chunk:
+                        all_data += chunk
+                        if all_data.count(marker_bytes) >= target_hits:
+                            marker_found = True
+                            break
+                except pexpect.TIMEOUT:
+                    continue
+                except pexpect.EOF:
+                    break
+
+            if not marker_found:
+                return f"[TIMEOUT] Command exceeded {timeout}s: {command}"
 
         parts = all_data.rsplit(marker_bytes, 1)
         raw = parts[0] if len(parts) > 0 else b""
@@ -325,6 +386,64 @@ class SessionManager:
                 continue
             cleaned.append(s)
         return "\n".join(cleaned).strip()
+
+    def _ssh_execute_one_shot(self, session: SSHSession, command: str,
+                               marker: str, timeout: int) -> str:
+        """Windows without PowerShell: per-command SSH spawn for reliable output."""
+        params = session.params
+        ssh_args = [
+            "ssh", "-T",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PreferredAuthentications=password",
+            "-p", str(params.port),
+        ]
+        if params.key_file:
+            ssh_args += ["-i", params.key_file]
+        remote_cmd = f"{command} & echo {marker}"
+        ssh_args += [f"{params.username}@{params.host}", remote_cmd]
+
+        try:
+            child = pexpect.spawn(ssh_args[0], ssh_args[1:],
+                                  timeout=timeout + 5)
+            idx = child.expect(
+                [b"password:", b"Password:", pexpect.EOF],
+                timeout=params.connect_timeout,
+            )
+            if idx in [0, 1]:
+                child.sendline(params.password)
+                child.expect(marker, timeout=timeout)
+                raw = child.before or b""
+                child.close()
+            elif idx == 2:
+                raw = child.before or b""
+                child.close()
+            else:
+                child.close()
+                return f"[TIMEOUT] One-shot SSH connection timeout"
+
+            try:
+                output = raw.decode("gbk", errors="replace")
+            except Exception:
+                output = raw.decode("utf-8", errors="replace")
+
+            output = output.replace("\r\n", "\n").replace("\r", "\n").strip()
+            parts = output.split(marker)
+            raw_out = parts[0] if len(parts) > 0 else ""
+            cleaned = []
+            cmd_prefix = command.strip()
+            for line in raw_out.split("\n"):
+                s = line.strip()
+                if not s:
+                    continue
+                if cmd_prefix and s.startswith(cmd_prefix):
+                    continue
+                cleaned.append(s)
+            return "\n".join(cleaned).strip()
+        except pexpect.EOF:
+            return f"[ERROR] SSH connection closed for one-shot command"
+        except Exception as e:
+            return f"[ERROR] One-shot execution failed: {e}"
 
     def ssh_execute(self, session_id: str, command: str,
                     timeout: int = 30) -> str:
@@ -425,19 +544,22 @@ class SessionManager:
     def _compute_remote_md5(self, session: SSHSession,
                              remote_path: str) -> Optional[str]:
         native_path = self._denormalize_for_md5(session, remote_path)
-        if session.platform == "windows":
-            cmd = (f"Get-FileHash -Path \"{native_path}\""
-                   f" -Algorithm MD5 | Select-Object -ExpandProperty Hash")
-        else:
-            cmd = f"md5sum \"{native_path}\" | cut -d' ' -f1"
-
         try:
+            if session.platform == "windows":
+                if session.powershell_available:
+                    cmd = (f"Get-FileHash -Path \"{native_path}\""
+                           f" -Algorithm MD5 | Select-Object -ExpandProperty Hash")
+                else:
+                    cmd = f"certutil -hashfile \"{native_path}\" MD5"
+            else:
+                cmd = f"md5sum \"{native_path}\" | cut -d' ' -f1"
+
             output = self._ssh_execute_inner(session, cmd, timeout=15)
             output = output.strip().upper()
-            if len(output) >= 32:
-                hash_val = output[:32].strip()
-                if all(c in "0123456789ABCDEF" for c in hash_val):
-                    return hash_val
+            hex_chars = set("0123456789ABCDEF")
+            for i in range(len(output) - 31):
+                if all(c in hex_chars for c in output[i:i + 32]):
+                    return output[i:i + 32]
             return None
         except Exception:
             return None
@@ -740,6 +862,8 @@ class SessionManager:
                 elif data == "__CTRL_Z__":
                     os.write(session.child.child_fd, b"\x1a")
                 else:
+                    if not data.endswith("\r"):
+                        data += "\r"
                     session.child.send(data)
 
             if timeout <= 0:

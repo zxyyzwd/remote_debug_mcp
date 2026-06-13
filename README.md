@@ -165,7 +165,7 @@ save_config → connections: [{...}]                 # 创建/更新配置条目
 | 工具 | 说明 |
 |------|------|
 | `telnet_connect` | 通过 config_name 连接（host/port/login/buffer/retries 全从配置解析） |
-| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；`__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`） |
+| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；`__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`；普通数据自动追加 `\r`） |
 | `telnet_listen` | 监听指定秒数，返回新数据（支持 utf-8/base64/hex 编码） |
 | `telnet_disconnect` | 关闭会话 |
 | `telnet_list` | 列出所有 Telnet 会话 |
@@ -199,20 +199,24 @@ save_config → connections: [{...}]                 # 创建/更新配置条目
 ## 架构
 
 ```
-src/remote_debug_mcp/
-├── server.py         # MCP 服务端：17 个工具定义 + 分发
-├── sessions.py       # SSH/Telnet 会话生命周期管理
-├── config_loader.py  # YAML 配置文件加载/保存
-├── com2tcp.exe       # com2tcp 桥接工具（随包发布）
-├── config.example.yaml
-├── __init__.py
-└── __main__.py
+src/
+├── remote_debug_mcp/
+│   ├── server.py         # MCP 服务端：17 个工具定义 + 分发
+│   ├── sessions.py       # SSH/Telnet 会话生命周期管理
+│   ├── config_loader.py  # YAML 配置文件加载/保存
+│   ├── config.example.yaml
+│   ├── __init__.py
+│   └── __main__.py
+└── remote/               # 上传远程服务器的 Python 脚本
+    ├── pyproject.toml    # 远程工具安装配置
+    └── com2telnet.py     # 串口转 Telnet 服务端
 ```
 
 ## 技术要点
 
 - SSH 使用 `pexpect.spawn('ssh', ...)` 直连，**不使用 pxssh**（避免 Windows 提示符兼容问题）
-- pexpect `encoding=None` 原始字节模式，应用层按平台分编码（Windows: GBK, Linux: UTF-8）
+- SSH pexpect `encoding=None` 原始字节模式，应用层按平台分编码（Windows: GBK, Linux: UTF-8）；Telnet pexpect `encoding=utf-8`
+- Windows 连接后尝试切 PowerShell，成功后走交互式命令执行；失败则回退 CMD + one-shot 模式（每次命令新起 SSH），适配不同 SSH 服务端配置
 - 命令输出通过 `echo` 唯一标记分隔，不依赖 shell 提示符
 - Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
 - 文件传输 SCP 优先 → SFTP 兜底，传输后自动 MD5 校验

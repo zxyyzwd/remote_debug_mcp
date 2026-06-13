@@ -78,10 +78,10 @@
 class ConnectionParams:
     host: str
     port: int
-    username: str
-    password: str       # SSH 密码（明文内存）
-    key_file: str       # SSH 密钥路径
-    connect_timeout: int
+    username: str = ""       # SSH/Telnet 用户名
+    password: str = ""       # SSH 密码（明文内存）
+    key_file: str = ""       # SSH 密钥路径
+    connect_timeout: int = 30  # SSH 默认 30s，Telnet 调用方按需覆盖
     max_retries: int = 3
     retry_backoff: float = 2.0  # 退避倍数
 ```
@@ -110,7 +110,29 @@ Linux / Windows 统一方式:
 | **Linux** | bash/sh | `echo __MCP_PLATFORM_DETECT__ && uname -s ... ` | UTF-8 | UTF-8 |
 | **Windows** | CMD → PowerShell | 同上，输出中含 `__WINDOWS__` 则判定 | GBK | GBK |
 
-连接后自动从 CMD 切换到 PowerShell（`powershell` 命令），工作目录 `D:\remote_debug`。
+连接后尝试从 CMD 切换到 PowerShell（`powershell` 命令），成功则工作目录 `D:\remote_debug`。
+
+### 3.1.1 Windows 双模命令执行
+
+Windows 目标可能因 SSH 服务端配置差异，导致交互式 shell 无法正常回传 stdout。系统通过健康检测自动选择执行模式：
+
+```
+连接 → 平台检测(Windows) → 尝试 PS 切换 → _verify_shell 健康检测
+  ├─ 通过 → powershell_available=True  → 交互式 send() 执行
+  └─ 失败 → powershell_available=False → 重建 CMD 连接
+               └─ 后续命令走 _ssh_execute_one_shot
+                  每次新起 ssh -T host "cmd & echo MARKER"
+```
+
+**交互式模式**（`powershell_available=True`）：
+- `child.send(f"{cmd}; echo MARKER\n")` — PowerShell 用 `;` 分隔符
+- 循环 `read_nonblocking` 等待 MARKER
+- win-pc 等标准 Windows 桌面使用此模式
+
+**One-shot 模式**（`powershell_available=False`）：
+- 每次命令 `pexpect.spawn('ssh', ['-T', ..., 'host', 'command & echo MARKER'])`
+- 直接捕获 stdout，不受 shell 交互状态影响
+- server-12 等 SSH 服务端配置受限的机器使用此模式
 
 ### 3.2 中文编码处理
 
@@ -183,7 +205,7 @@ Linux 流程:
 spawn('telnet', [host, port])
   │
   ├─ "Escape character is" → 连接成功（无登录）
-  ├─ "login:" / "Username:" → 需要登录
+  ├─ "login:" / "Login:" / "Username:" / "User:" / "username:" → 需要登录
   │     sendline(username)
   │     expect "Password:"
   │     sendline(password)
@@ -219,7 +241,7 @@ class TelnetSession:
 |------|------|------------|
 | `telnet_listen` | 监听 duration 秒，返回期间收到的新数据 | 是 |
 
-`telnet_read` / `telnet_read_all` 已删除，合并为 `telnet_listen` 覆盖。`telnet_send` 合并了 `telnet_execute`：`timeout=0` 发后即返，`timeout>0` 发后等响应。
+`telnet_read` / `telnet_read_all` 已删除，合并为 `telnet_listen` 覆盖。`telnet_send` 合并了 `telnet_execute`：`timeout=0` 发后即返，`timeout>0` 发后等响应。普通数据自动追加 `\r`，确保串口终端正确执行命令。
 
 ### 4.3 二进制数据处理
 
@@ -248,7 +270,7 @@ telnet_start_monitor(output_file?)
   └─ telnet_stop_monitor → 停止线程，返回行数
 ```
 
-monitor 运行时 `telnet_read` / `telnet_read_all` / `telnet_listen` 从 deque 取数据，非激活时沿用旧 buffer 路径。`telnet_send` 支持控制字符 `__CTRL_C__`（0x03）、`__CTRL_Z__`（0x1a）、`__CTRL_D__`（0x04）。
+monitor 运行时 `telnet_listen` 从 deque 取数据，非激活时沿用旧 buffer 路径。`telnet_send` 支持控制字符 `__CTRL_C__`（0x03）、`__CTRL_Z__`（0x1a）、`__CTRL_D__`（0x04），普通数据自动追加 `\r` 确保串口终端正确执行命令。
 
 ### 4.5 自动重连
 
@@ -270,8 +292,10 @@ LLM 与 MCP 交互流程:
 ┌──────────────┐     SSH (PowerShell)     ┌─────────────────────────┐
 │  MCP Server  │ ───────────────────────▶ │  Windows PC (目标机)     │
 │              │                          │                          │
-│              │  1. upload com2tcp.exe   │  D:\remote_debug\        │
-│              │  2. 后台启动 com2tcp      │    com2tcp_5200.exe       │
+│              │  1. upload com2telnet.py  │  D:\remote_debug\        │
+│              │     + pyproject.toml      │    \com2telnet\          │
+│              │  2. pip install dep       │                          │
+│              │  3. 后台启动 com2telnet    │                          │
 │              │                          │                          │
 │              │     Telnet               │  COM4 ◄── 串口设备       │
 │              │ ◄─────────────────────── │    :5200 (telnet)        │
@@ -284,8 +308,9 @@ LLM 与 MCP 交互流程:
 1. 前置条件: SSH 已连接到 Windows PC (session_id),
    config.yaml 中已有 SSH 配置（名称如 "windows-pc"）。
 
-2. 上传 com2tcp.exe
-   setup_com2tcp 自动通过 SSH 上传 exe 到 D:\remote_debug\
+2. 上传 com2telnet.py + pyproject.toml
+   setup_com2tcp 自动通过 SSH 上传脚本到 D:\remote-debug\com2telnet\
+   pip install -e 安装依赖（pyserial）
 
 3. 终止旧进程 + 后台启动 + 验证
 
@@ -306,8 +331,8 @@ LLM 与 MCP 交互流程:
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `baud` | 115200 | 串口波特率 |
-| `--ignore-dsr` | 始终开启 | 忽略 DSR 信号 |
-| `--telnet` | 始终开启 | Telnet 模式（非 RFC2217） |
+| `--host` | 0.0.0.0 | Telnet 服务绑定地址 |
+| `--serial` PORT:PORT[:BAUD] | — | 串口到 Telnet 映射 |
 
 ### 5.4 Com2TcpConfig 数据模型
 
@@ -350,7 +375,8 @@ asyncio event loop (主线程)
 ```
 
 **关键约束**:
-- 所有 `pexpect` 调用必须在 `run_in_executor` 中
+- 长时间阻塞的 `pexpect` 调用（`ssh_connect`、`ssh_execute`、`telnet_connect`、`telnet_listen`）必须在 `run_in_executor` 中
+- 轻量操作（`ssh_disconnect`、`telnet_disconnect`、`telnet_send(timeout=0)`）因其执行时间极短（毫秒级），直接在事件循环线程中执行，避免不必要的线程调度开销
 - `telnet_listen` 会长时间占用线程，duration 不宜过大（建议 ≤ 60s）
 - `SessionManager._lock` 保护 session dict 的并发访问
 
@@ -387,7 +413,7 @@ SSH connection failed [myssh]: Authentication failed
 - 密码在内存中明文存储（`ConnectionParams.password`），进程终止后清除
 - SSH `StrictHostKeyChecking=no` 跳过主机密钥验证（内网调试场景可接受）
 - 不在日志中输出密码
-- 建议生产环境使用密钥认证 (`ssh_connect_key`)
+- 建议生产环境使用密钥认证（在 config.yaml 中配置 `key_file` 字段，`ssh_connect` 自动识别）
 
 ---
 
@@ -397,7 +423,7 @@ SSH connection failed [myssh]: Authentication failed
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
-| `ssh_connect` | 通过 config_name 从 config.yaml 读取参数连接（密码/密钥自适应） | session_id, config_name |
+| `ssh_connect` | 通过 config_name 从 config.yaml 读取参数连接（密码/密钥自适应），自动检测平台并选最优执行模式 | session_id, config_name, max_retries? |
 | `ssh_execute` | 执行命令（自动适配 bash/PowerShell，中文编码正确） | session_id, command, timeout |
 | `ssh_upload` | SCP 上传（自动降级 SFTP，空格兼容，中文目录自动 mkdir，MD5 校验） | session_id, local_path, remote_path |
 | `ssh_download` | SCP 下载（自动降级 SFTP，空格兼容，MD5 校验） | session_id, remote_path, local_path |
@@ -409,7 +435,7 @@ SSH connection failed [myssh]: Authentication failed
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
 | `telnet_connect` | 通过 com2tcp config_name 连接（host/port/login/buffer/retries 全部从配置解析，无需 LLM 传参） | session_id, config_name |
-| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；支持 `__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`） | session_id, data, timeout |
+| `telnet_send` | 发送数据（timeout=0 发后即返，timeout>0 等响应；支持 `__CTRL_C__`/`__CTRL_D__`/`__CTRL_Z__`；普通数据自动追加 `\r`） | session_id, data, timeout |
 | `telnet_listen` | 监听新数据（支持 utf-8/base64/hex 编码） | session_id, duration, encoding |
 | `telnet_start_monitor` | 启动后台持续监听，可选文件输出 | session_id, output_file? |
 | `telnet_stop_monitor` | 停止后台监听 | session_id |

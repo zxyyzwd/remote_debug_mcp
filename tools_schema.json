@@ -259,7 +259,7 @@
   },
   {
     "name": "setup_com2tcp",
-    "description": "Complete com2tcp workflow:\n1. SSH upload com2tcp.exe to Windows PC via base64\n2. Kill any previous com2tcp instance on the same port\n3. Start com2tcp in background (PowerShell Start-Process)\n4. Verify process is running\n5. Returns telnet connection info\n\nAfter setup, use telnet_connect to host:telnet_port to access serial data from the COM port.\n\nExample: setup_com2tcp with com_port='COM4', telnet_port=5200 runs:\n  com2tcp.exe --telnet --ignore-dsr --baud 115200 COM4 5200",
+    "description": "Complete com2telnet deployment workflow:\n1. SSH upload com2telnet.py + pyproject.toml to D:\\remote-debug\\com2telnet\\ on Windows PC\n2. Install com2telnet + dependencies (pyserial) via pip\n3. Kill any previous com2telnet instance on the same port\n4. Start com2telnet in background (PowerShell Start-Process -WindowStyle Hidden)\n5. Verify process is running\n\nAfter setup, use telnet_connect to host:telnet_port to access serial data from the COM port.\n\nExample: setup_com2tcp with com_port='COM4', telnet_port=5200 runs:\n  com2telnet --serial COM4:5200:115200",
     "inputSchema": {
       "type": "object",
       "properties": {

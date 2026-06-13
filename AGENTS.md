@@ -19,14 +19,17 @@ python -m remote_debug_mcp
 ## 架构
 
 ```
-src/remote_debug_mcp/
-├── __init__.py       # 导出 main()
-├── __main__.py       # asyncio.run(main())
-├── server.py         # MCP 服务端：17 个工具定义 + 分发
-├── sessions.py       # SessionManager：SSH/Telnet 连接生命周期管理
-├── config_loader.py  # YAML 配置文件加载/保存、SSH/Com2Tcp 配置数据类
-├── com2tcp.exe       # com2tcp 桥接工具
-└── config.example.yaml
+src/
+├── remote_debug_mcp/        # MCP 服务端主包
+│   ├── __init__.py          # 导出 main()
+│   ├── __main__.py          # asyncio.run(main())
+│   ├── server.py            # MCP 服务端：17 个工具定义 + 分发
+│   ├── sessions.py          # SessionManager：SSH/Telnet 连接生命周期管理
+│   ├── config_loader.py     # YAML 配置文件加载/保存、SSH/Com2Tcp 配置数据类
+│   └── config.example.yaml
+└── remote/                  # 上传远程服务器执行的 Python 脚本
+    ├── pyproject.toml       # 远程工具安装配置
+    └── com2telnet.py        # 串口转 Telnet 服务端
 ```
 
 - **入口**: `remote_debug_mcp.server.main()` — 启动 MCP stdio 服务器。
@@ -66,13 +69,13 @@ output = child.before
 
 - 会话 ID 由调用方自行选择字符串。重复使用同一 ID 会覆盖旧会话。
 - 所有同步 pexpect 调用必须通过 `loop.run_in_executor` 执行，避免阻塞 asyncio 事件循环。
-- `SSHSession` 存储 `ConnectionParams`（主机、端口、用户名、密码/密钥），供自动重连使用。
+- `SSHSession` 存储 `ConnectionParams`（主机、端口、用户名、密码/密钥），供自动重连使用。`powershell_available` 标记决定命令执行走交互式还是 one-shot 模式。
 - SSH 连接统一通过 `config.yaml` 中的配置名称连接 (`ssh_connect(config_name="xxx")`)，根据配置中是否有 `key_file` 自动选择密码或密钥认证。
 - `TelnetSession` 维护一个字节缓冲区，带读指针；`telnet_listen` 消费新数据。缓冲区有可配置的最大大小（默认 64KB）。
 - `telnet_listen` 支持 `encoding` 参数：`utf-8`（默认）、`base64` 或 `hex`，用于安全处理二进制数据。
-- `telnet_send` 合并了原 `telnet_execute` 功能：`timeout=0` 发送后立即返回，`timeout>0` 发送后等待响应返回数据。支持 `__CTRL_C__` / `__CTRL_D__` / `__CTRL_Z__` 控制字符。
+- `telnet_send` 合并了原 `telnet_execute` 功能：`timeout=0` 发送后立即返回，`timeout>0` 发送后等待响应返回数据。支持 `__CTRL_C__` / `__CTRL_D__` / `__CTRL_Z__` 控制字符。普通数据自动追加 `\r`，无需调用方手动添加，确保串口终端正确执行命令。
 - `telnet_start_monitor` 启动后台持续监听，可选输出到文件。`telnet_start_monitor` 启动后台监停并返回行数。
-- `com2tcp.exe` 位于源码包目录。`setup_com2tcp` 通过 SSH 上传（SCP/SFTP）到 Windows PC，PowerShell `Start-Process -WindowStyle Hidden` 后台启动，之后调用方可 `telnet_connect(config_name="com2tcp_COM4_5200")` 访问串口数据（host 自动从关联 SSH 配置解析）。
+- `src/remote/` 包含上传远程服务器执行的脚本。`setup_com2tcp` 通过 SSH 上传 `com2telnet.py` + `pyproject.toml` 到 Windows PC 的 `D:\remote-debug\com2telnet\`，执行 `pip install -e` 安装依赖（pyserial），PowerShell `Start-Process -WindowStyle Hidden` 后台启动 `com2telnet --serial COMx:PORT:BAUD`，之后调用方可 `telnet_connect(config_name="com2tcp_COM4_5200")` 访问串口数据（host 自动从关联 SSH 配置解析）。
 - `config.yaml` 固定为配置文件路径（自动搜索多个位置）。`list_connections` 查看已加载配置，`save_config` 将内存配置写回文件。
 - `telnet_connect` 仅需 `session_id` + `config_name`，所有连接参数（host、port、username、password、timeout、buffer_max_size、max_retries）均从 com2tcp 配置解析，无需 LLM 传递。
 - `save_config` 是配置唯一入库入口：无参保存内存配置，带 `connections` 参数创建/更新条目后写入文件。无 `config.yaml` 时 LLM 应询问用户参数后调用此工具。
