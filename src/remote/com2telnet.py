@@ -162,17 +162,25 @@ class SerialPortManager:
         logger.warning("%s reader thread exited: %s", self.name, msg)
 
     async def _broadcast(self, data: bytes) -> None:
-        dead: List[asyncio.StreamWriter] = []
         with self._clients_lock:
             writers = list(self._clients)
+        if not writers:
+            return
+
         for writer in writers:
             try:
                 writer.write(data)
+            except Exception:
+                pass
+
+        async def _drain_one(writer):
+            try:
                 await writer.drain()
             except Exception:
-                dead.append(writer)
-        for w in dead:
-            await self.remove_client(w)
+                await self.remove_client(writer)
+
+        await asyncio.gather(*[_drain_one(w) for w in writers],
+                             return_exceptions=True)
 
     # ── client management ────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import hashlib
 import base64
@@ -11,8 +12,9 @@ import pexpect
 
 
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_BACKOFF = 2.0
+DEFAULT_RETRY_BACKOFF = 1.0
 DEFAULT_BUFFER_SIZE = 65536
+_ANSI_RE = re.compile(rb'\x1b\[[0-9;?]*[a-zA-Z]')
 MAX_LINE_COUNT = 900000
 
 
@@ -38,6 +40,7 @@ class SSHSession:
     reconnect_count: int = 0
     last_error: str = ""
     powershell_available: bool = True
+    use_pty: bool = False
     io_lock: threading.Lock = field(default_factory=threading.Lock)
     created_at: float = field(default_factory=time.time)
 
@@ -99,11 +102,13 @@ class SessionManager:
     # SSH: 底层连接 (raw pexpect.spawn，不依赖 pxssh)
     # ================================================================
 
-    def _ssh_spawn(self, params: ConnectionParams) -> pexpect.spawn:
+
+    def _ssh_spawn(self, params: ConnectionParams,
+                   use_pty: bool = False) -> pexpect.spawn:
         """构建 SSH 命令，encoding=None 获取原始字节避免编码转换损失。"""
         ssh_args = [
             "ssh",
-            "-T",
+            "-t" if use_pty else "-T",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "PreferredAuthentications=password",
@@ -184,25 +189,39 @@ class SessionManager:
         if platform == "windows":
             if not self._setup_windows_workspace(child):
                 child.close()
+                session.use_pty = True
                 session.powershell_available = False
-                child2 = self._ssh_spawn(session.params)
+                child2 = self._ssh_spawn(session.params, use_pty=True)
                 session.child = child2
                 session.platform = "windows"
-                time.sleep(0.3)
+                time.sleep(0.5)
                 try:
                     child2.read_nonblocking(99999, timeout=0.5)
                 except Exception:
                     pass
-                child2.sendline(
+                if self._setup_windows_workspace_pty(child2, session):
+                    return "windows"
+                child2.close()
+                session.powershell_available = False
+                child3 = self._ssh_spawn(session.params)
+                session.child = child3
+                session.use_pty = False
+                session.platform = "windows"
+                time.sleep(0.3)
+                try:
+                    child3.read_nonblocking(99999, timeout=0.5)
+                except Exception:
+                    pass
+                child3.sendline(
                     "mkdir D:\\remote_debug 2>nul & echo __WORKSPACE_READY__"
                 )
                 try:
-                    child2.expect("__WORKSPACE_READY__", timeout=10)
+                    child3.expect("__WORKSPACE_READY__", timeout=10)
                 except (pexpect.TIMEOUT, pexpect.EOF):
                     pass
                 time.sleep(0.3)
                 try:
-                    child2.read_nonblocking(99999, timeout=0.3)
+                    child3.read_nonblocking(99999, timeout=0.3)
                 except Exception:
                     pass
                 return "windows"
@@ -247,21 +266,42 @@ class SessionManager:
             pass
         return True
 
+    def _setup_windows_workspace_pty(self, child: pexpect.spawn,
+                                       session: SSHSession) -> bool:
+        child.send("powershell\r")
+        time.sleep(2.0)
+        try:
+            child.read_nonblocking(99999, timeout=0.5)
+        except Exception:
+            pass
+        child.send(
+            "New-Item -ItemType Directory -Force -Path D:\\remote_debug | Out-Null;"
+            " echo __PTY_READY__\r"
+        )
+        try:
+            child.expect("__PTY_READY__", timeout=15)
+            session.powershell_available = True
+            time.sleep(0.3)
+            try:
+                child.read_nonblocking(99999, timeout=0.3)
+            except Exception:
+                pass
+            return True
+        except (pexpect.TIMEOUT, pexpect.EOF):
+            return False
+
     def _verify_shell(self, child: pexpect.spawn) -> bool:
-        """发送 echo 验证 shell 是否正常产生实际输出（非仅命令回显）。
-        匹配 marker 两次：第一次是命令回显，第二次是 echo 的实际输出。"""
         marker = "__MCP_ALIVE__"
         child.sendline(f"echo {marker}")
         try:
-            child.expect(marker, timeout=5)
-            child.expect(marker, timeout=3)
+            child.expect(marker, timeout=10)
             return True
         except (pexpect.TIMEOUT, pexpect.EOF):
             return False
 
     def _do_ssh_connect(self, session: SSHSession) -> str:
         try:
-            child = self._ssh_spawn(session.params)
+            child = self._ssh_spawn(session.params, use_pty=session.use_pty)
             session.child = child
             session.platform = self._detect_and_setup_prompt(child, session)
             session.connected = True
@@ -333,36 +373,60 @@ class SessionManager:
             except Exception:
                 pass
 
-            if session.platform == "windows" and not session.powershell_available:
+            if session.platform == "windows" and not session.powershell_available and not session.use_pty:
                 return self._ssh_execute_one_shot(session, command, marker, timeout)
             else:
-                child.send(full_cmd_bytes + b"\n")
+                if session.use_pty:
+                    child.send(b"\x03")
+                    time.sleep(0.3)
+                    child.send(full_cmd_bytes + b"\r")
+                else:
+                    child.send(full_cmd_bytes + b"\n")
 
-            deadline = time.time() + timeout
-            all_data = b""
-            marker_found = False
-
-            target_hits = 1
-
-            while time.time() < deadline:
-                time.sleep(0.3)
-                try:
-                    chunk = child.read_nonblocking(99999, timeout=0.3)
-                    if chunk:
-                        all_data += chunk
-                        if all_data.count(marker_bytes) >= target_hits:
-                            marker_found = True
-                            break
-                except pexpect.TIMEOUT:
-                    continue
-                except pexpect.EOF:
-                    break
+            if session.use_pty:
+                deadline = time.time() + timeout
+                all_data = b""
+                marker_found = False
+                target_hits = 1
+                while time.time() < deadline:
+                    time.sleep(0.1)
+                    try:
+                        chunk = child.read_nonblocking(99999, timeout=1.0)
+                        if chunk:
+                            all_data += chunk
+                            if all_data.count(marker_bytes) >= target_hits:
+                                marker_found = True
+                                break
+                    except pexpect.TIMEOUT:
+                        continue
+                    except pexpect.EOF:
+                        break
+            else:
+                deadline = time.time() + timeout
+                all_data = b""
+                marker_found = False
+                target_hits = 2 if session.platform == "windows" else 1
+                while time.time() < deadline:
+                    time.sleep(0.1)
+                    try:
+                        chunk = child.read_nonblocking(99999, timeout=0.3)
+                        if chunk:
+                            all_data += chunk
+                            if all_data.count(marker_bytes) >= target_hits:
+                                marker_found = True
+                                break
+                    except pexpect.TIMEOUT:
+                        continue
+                    except pexpect.EOF:
+                        break
 
             if not marker_found:
                 return f"[TIMEOUT] Command exceeded {timeout}s: {command}"
 
         parts = all_data.rsplit(marker_bytes, 1)
         raw = parts[0] if len(parts) > 0 else b""
+        if session.use_pty:
+            raw = _ANSI_RE.sub(b"", raw)
 
         if session.platform == "windows":
             try:
@@ -379,6 +443,8 @@ class SessionManager:
         for line in lines:
             s = line.strip()
             if not s:
+                continue
+            if s == "^C":
                 continue
             if marker in s:
                 continue
@@ -854,7 +920,14 @@ class SessionManager:
         if not session or not session.connected:
             return f"Telnet session not found or not connected: {session_id}"
         try:
+            marker = None
             with session.io_lock:
+                if timeout > 0:
+                    try:
+                        session.child.expect([pexpect.TIMEOUT, pexpect.EOF],
+                                              timeout=0.3)
+                    except Exception:
+                        pass
                 if data == "__CTRL_C__":
                     os.write(session.child.child_fd, b"\x03")
                 elif data == "__CTRL_D__":
@@ -862,15 +935,25 @@ class SessionManager:
                 elif data == "__CTRL_Z__":
                     os.write(session.child.child_fd, b"\x1a")
                 else:
-                    if not data.endswith("\r"):
+                    if timeout > 0:
+                        marker = f"__MCP_{int(time.time() * 1000000)}__"
+                        data = data.rstrip("\r") + f"; echo {marker}\r"
+                    elif not data.endswith("\r"):
                         data += "\r"
                     session.child.send(data)
 
             if timeout <= 0:
                 return f"Data sent to [{session_id}]"
 
-            session.child.expect([pexpect.TIMEOUT, pexpect.EOF],
-                                  timeout=timeout)
+            if marker:
+                session.child.expect(marker, timeout=2)
+                try:
+                    session.child.expect(marker, timeout=timeout)
+                except pexpect.TIMEOUT:
+                    pass
+            else:
+                session.child.expect([pexpect.TIMEOUT, pexpect.EOF],
+                                      timeout=timeout)
             output = session.child.before
             if output is None:
                 return ""
@@ -1000,8 +1083,6 @@ class SessionManager:
             return f"Telnet monitor not active [{session_id}]"
 
         session.monitor_active = False
-        if session.monitor_thread and session.monitor_thread.is_alive():
-            session.monitor_thread.join(timeout=3)
         return f"Telnet monitor stopped [{session_id}]: {session.line_count} lines"
 
     # ================================================================

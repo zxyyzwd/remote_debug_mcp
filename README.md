@@ -128,6 +128,35 @@ save_config → connections: [{...}]                 # 创建/更新配置条目
 
 ## com2tcp 串口调试工作流
 
+### 远程环境要求
+
+远程 Windows PC 需满足以下条件，否则 `setup_com2tcp` 将失败：
+
+| 依赖 | 说明 | 安装方式 |
+|------|------|----------|
+| **Python >= 3.8** | 运行 com2telnet.py 串口转 TCP 服务 | [python.org](https://www.python.org/downloads/) 下载，**勾选 "Add Python to PATH"** |
+| **pip** | 安装 pyserial 依赖 | 随 Python 一同安装 |
+| **pyserial** | 串口通信库 | `setup_com2tcp` 自动 `pip install` |
+| **防火墙放行** | Telnet 端口（如 5200）需入站放行 TCP | `setup_com2tcp` 执行时自动通过 SSH 放行，或手动配置 |
+
+安装 Python 后验证：
+
+```powershell
+python --version
+pip --version
+```
+
+`setup_com2tcp` 会自动上传 `com2telnet.py` + `pyproject.toml` 到 `D:\remote-debug\com2telnet\` 并安装依赖，无需手动操作。
+
+如果远程机器无 Python，可通过 SSH 自动下载安装：
+
+```powershell
+Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile "$env:TEMP\python-installer.exe"
+Start-Process -Wait -FilePath "$env:TEMP\python-installer.exe" -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1"
+```
+
+### 架构
+
 ```
 ┌──────────┐  SSH (PowerShell)   ┌──────────────────┐
 │  MCP     │ ──────────────────▶ │  Windows PC       │
