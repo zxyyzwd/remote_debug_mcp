@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remote-debug-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Remote debugging tools for serial port and telnet bridging"
 requires-python = ">=3.10"
 dependencies = [

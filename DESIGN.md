@@ -108,7 +108,8 @@ Linux / Windows 统一方式:
 | 平台 | Shell | 检测方式 | 命令编码 | 输出解码 |
 |------|-------|---------|---------|---------|
 | **Linux** | bash/sh | `echo __MCP_PLATFORM_DETECT__ && uname -s ... ` | UTF-8 | UTF-8 |
-| **Windows** | CMD → PowerShell | 同上，输出中含 `__WINDOWS__` 则判定 | GBK | GBK |
+| **Windows (`-T`)** | CMD → PowerShell | 同上，输出中含 `__WINDOWS__` 则判定 | GBK | GBK |
+| **Windows (`-t`)** | PowerShell (PTY) | `-T` 失败回退 `-t`，`chcp 65001` | UTF-8 | UTF-8 |
 
 连接后尝试从 CMD 切换到 PowerShell（`powershell` 命令），成功则工作目录 `D:\remote_debug`。
 
@@ -136,30 +137,43 @@ Windows 目标可能因 SSH 服务端配置差异，导致交互式 shell 无法
 
 ### 3.2 中文编码处理
 
-pexpect 使用 `encoding=None`（原始字节模式），所有编解码由应用层控制：
+pexpect 使用 `encoding=None`（原始字节模块），所有编解码由应用层控制：
 
+**Windows `-T` 无 PTY 模式**（如 win-pc）：
 ```
-Windows 流程:
-  ┌─────────┐     GBK 编码命令     ┌──────────────┐
-  │  MCP    │ ──────────────────▶ │  PowerShell   │
-  │  Server │                     │  (GBK 输入)    │
-  │         │  ◀── 原始字节 ────   │  (GBK 输出)    │
-  │         │  → GBK 解码输出     └──────────────┘
+  ┌─────────┐     GBK 编码命令      ┌──────────────┐
+  │  MCP    │ ──────────────────▶  │  PowerShell   │
+  │  Server │                      │  (GBK)        │
+  │         │  ◀── 原始字节 ────    │              │
+  │         │  → GBK 解码输出      └──────────────┘
   └─────────┘
+```
 
-Linux 流程:
-  ┌─────────┐     UTF-8 编码命令   ┌──────────────┐
-  │  MCP    │ ──────────────────▶ │  bash/sh      │
-  │  Server │                     │  (UTF-8)      │
-  │         │  ◀── 原始字节 ────   │              │
-  │         │  → UTF-8 解码输出   └──────────────┘
+**Windows `-t` PTY 模式**（如 server-12，`-T` 失败回退）：
+```
+  ┌─────────┐   chcp 65001 + UTF-8  ┌──────────────┐
+  │  MCP    │ ──────────────────▶  │  PowerShell   │
+  │  Server │                      │  (UTF-8 PTY)  │
+  │         │  ◀── 原始字节 ────    │              │
+  │         │  → UTF-8 解码输出    └──────────────┘
+  └─────────┘
+```
+
+**Linux 流程**：
+```
+  ┌─────────┐     UTF-8 编码命令    ┌──────────────┐
+  │  MCP    │ ──────────────────▶  │  bash/sh      │
+  │  Server │                      │  (UTF-8)      │
+  │         │  ◀── 原始字节 ────    │              │
+  │         │  → UTF-8 解码输出    └──────────────┘
   └─────────┘
 ```
 
 关键点：
-- pexpect `encoding=None` 避免内部 UTF-8 解码损失 GBK 字节
-- Windows 命令含中文参数时必须用 GBK 编码发送，否则路径无法识别
-- 标记 `__MCP_CMD_<ts>__` 纯 ASCII，GBK/UTF-8 字节相同，平台无关
+- pexpect `encoding=None` 避免内部编解码损失字节
+- Windows `-T` 模式命令含中文参数时用 GBK 编码
+- Windows `-t` 模式 PTY 建立后执行 `chcp 65001` 切换 UTF-8，编解码统一 UTF-8
+- 标记 `__MCP_CMD_<ts>__` 纯 ASCII，编码无关
 
 ### 3.3 文件传输
 
@@ -241,7 +255,7 @@ class TelnetSession:
 |------|------|------------|
 | `telnet_listen` | 监听 duration 秒，返回期间收到的新数据 | 是 |
 
-`telnet_read` / `telnet_read_all` 已删除，合并为 `telnet_listen` 覆盖。`telnet_send` 合并了 `telnet_execute`：`timeout=0` 发后即返，`timeout>0` 发后等响应。普通数据自动追加 `\r`，确保串口终端正确执行命令。
+`telnet_read` / `telnet_read_all` 已删除，合并为 `telnet_listen` 覆盖。`telnet_send` 使用 echo-marker 策略（与 SSH 统一）：发送 `command; echo __MCP_{ts}__`，两次 `expect(marker)` 分别消费命令回显和捕获输出，命令执行完即刻返回，不再盲等 timeout 秒。普通数据自动追加 `\r`。
 
 ### 4.3 二进制数据处理
 

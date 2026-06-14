@@ -282,6 +282,8 @@ class SessionManager:
             child.expect("__PTY_READY__", timeout=15)
             session.powershell_available = True
             time.sleep(0.3)
+            child.send("chcp 65001\r")
+            time.sleep(0.3)
             try:
                 child.read_nonblocking(99999, timeout=0.3)
             except Exception:
@@ -307,9 +309,13 @@ class SessionManager:
             session.connected = True
             session.reconnect_count = 0
             session.last_error = ""
+            mode = "pty" if session.use_pty else "no-pty"
+            shell = "powershell" if session.powershell_available else "cmd"
+            enc = "gbk" if session.platform == "windows" else "utf-8"
             return (f"SSH connected: {session.params.username}@"
-                    f"{session.params.host}:{session.params.port}"
-                    f" [{session.platform}] [session={session.session_id}]")
+                    f"{session.params.host}:{session.params.port} "
+                    f"[{session.platform}] [{mode}] [{shell}] [{enc}] "
+                    f"[session={session.session_id}]")
         except Exception as e:
             session.last_error = str(e)
             session.close()
@@ -363,7 +369,8 @@ class SessionManager:
         if session.platform == "windows":
             if not session.powershell_available:
                 full_cmd = f"{command} & echo {marker}"
-            full_cmd_bytes = full_cmd.encode("gbk", errors="replace")
+            enc = "utf-8" if session.use_pty else "gbk"
+            full_cmd_bytes = full_cmd.encode(enc, errors="replace")
         else:
             full_cmd_bytes = full_cmd.encode("utf-8")
 
@@ -429,8 +436,9 @@ class SessionManager:
             raw = _ANSI_RE.sub(b"", raw)
 
         if session.platform == "windows":
+            out_enc = "utf-8" if session.use_pty else "gbk"
             try:
-                output = raw.decode("gbk")
+                output = raw.decode(out_enc)
             except (UnicodeDecodeError, LookupError):
                 output = raw.decode("utf-8", errors="replace")
         else:
@@ -834,10 +842,12 @@ class SessionManager:
             session.connected = True
             session.reconnect_count = 0
             session.last_error = ""
-            session.buffer = b""
-            session.read_cursor = 0
-            return (f"Telnet connected: {session.params.host}:"
-                    f"{session.params.port} [session={session.session_id}]")
+
+            return (
+                f"Telnet connected: "
+                f"{session.params.host}:{session.params.port} "
+                f"[session={session.session_id}]"
+            )
         except Exception as e:
             session.last_error = str(e)
             session.close()
@@ -946,7 +956,10 @@ class SessionManager:
                 return f"Data sent to [{session_id}]"
 
             if marker:
-                session.child.expect(marker, timeout=2)
+                try:
+                    session.child.expect(marker, timeout=2)
+                except pexpect.TIMEOUT:
+                    pass
                 try:
                     session.child.expect(marker, timeout=timeout)
                 except pexpect.TIMEOUT:

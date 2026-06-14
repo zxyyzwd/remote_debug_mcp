@@ -244,15 +244,29 @@ src/
 ## 技术要点
 
 - SSH 使用 `pexpect.spawn('ssh', ...)` 直连，**不使用 pxssh**（避免 Windows 提示符兼容问题）
-- SSH pexpect `encoding=None` 原始字节模式，应用层按平台分编码（Windows: GBK, Linux: UTF-8）；Telnet pexpect `encoding=utf-8`
+- SSH pexpect `encoding=None` 原始字节模式
+- **Windows 双路径编码**：`-T` 无 PTY 模式用 **GBK** 编码，`-t` PTY 回退模式建立后执行 `chcp 65001` 切换 **UTF-8** 编码
+- Linux 统一 UTF-8 编解码
 - Windows 连接后尝试切 PowerShell，成功后走交互式命令执行；失败则回退 CMD + one-shot 模式（每次命令新起 SSH），适配不同 SSH 服务端配置
 - 命令输出通过 `echo` 唯一标记分隔，不依赖 shell 提示符
 - Windows 自动切换到 PowerShell，工作目录 `D:\remote_debug`
 - 文件传输 SCP 优先 → SFTP 兜底，传输后自动 MD5 校验
-- Telnet `telnet_send` 合并原 `telnet_execute`，`timeout=0` 不等待，`timeout>0` 等响应
+- Telnet `telnet_send` 使用 echo-marker 策略（`command; echo __MCP_{ts}__`），命令执行完即刻返回，不再盲等 timeout 秒
+- Telnet `telnet_stop_monitor` 移除阻塞 `join()`，不再阻塞事件循环
 - Telnet 缓冲区 64KB（可配），支持 utf-8/base64/hex 编码
 - Telnet 后台监听：deque 行缓存 90 万行（FIFO），可选持续写入文件
 - 自动重连：指数退避，默认最多 3 次
 - 配置自动缓存内存，`save_config` 持久化到 YAML
 
 详细设计参见 [DESIGN.md](DESIGN.md)
+
+## 变更日志
+
+### v0.2.0
+
+- **Windows 双路径编码**：`-T` 无 PTY 模式仍用 GBK，`-t` PTY 回退模式切换为 UTF-8（建立后执行 `chcp 65001`），解决 server12 等 PTY 机器中文乱码
+- **Telnet 命令 latency 优化**：`telnet_send` 采用 echo-marker 策略（与 SSH 统一），命令执行完即刻返回，不再盲等 timeout 秒
+- **Telnet 监控无阻塞**：`telnet_stop_monitor` 移除 `join()` 调用，不再阻塞事件循环 3 秒
+- **com2telnet 广播优化**：`_broadcast()` 改用 `asyncio.gather()` 并发 drain，慢客户端不再阻塞其他客户端
+- **SSH 命令轮询**：输出轮询间隔 300ms → 100ms，命令响应延迟降低 3 倍
+- 连接日志新增 `[pty/no-pty]` `[powershell/cmd]` `[gbk/utf-8]` 诊断信息
