@@ -308,8 +308,7 @@ LLM 与 MCP 交互流程:
 │              │                          │                          │
 │              │  1. upload com2telnet.py  │  D:\remote_debug\        │
 │              │     + pyproject.toml      │    \com2telnet\          │
-│              │  2. pip install dep       │                          │
-│              │  3. 后台启动 com2telnet    │                          │
+│              │  2. 后台启动 com2telnet    │                          │
 │              │                          │                          │
 │              │     Telnet               │  COM4 ◄── 串口设备       │
 │              │ ◄─────────────────────── │    :5200 (telnet)        │
@@ -324,7 +323,6 @@ LLM 与 MCP 交互流程:
 
 2. 上传 com2telnet.py + pyproject.toml
    setup_com2tcp 自动通过 SSH 上传脚本到 D:\remote_debug\com2telnet\
-   pip install -e 安装依赖（pyserial）
 
 3. 终止旧进程 + 后台启动 + 验证
 

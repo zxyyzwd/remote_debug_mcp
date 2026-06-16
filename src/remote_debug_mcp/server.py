@@ -222,11 +222,10 @@ TOOLS = [
         description="Complete com2telnet deployment workflow:\n"
                     "1. SSH upload com2telnet.py + pyproject.toml to "
                     "D:\\remote_debug\\com2telnet\\ on Windows PC\n"
-                    "2. Install com2telnet + dependencies (pyserial) via pip\n"
-                    "3. Kill any previous com2telnet instance on the same port\n"
-                    "4. Start com2telnet in background "
+                    "2. Kill any previous com2telnet instance on the same port\n"
+                    "3. Start com2telnet in background "
                     "(PowerShell Start-Process -WindowStyle Hidden)\n"
-                    "5. Verify process is running\n\n"
+                    "4. Verify process is running\n\n"
                     "After setup, use telnet_connect to host:telnet_port "
                     "to access serial data from the COM port.\n\n"
                     "Example: setup_com2tcp with com_port='COM4', "
@@ -683,15 +682,6 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
     if "OK" not in upload1:
         return "\n".join(parts)
 
-    parts.append("")
-
-    pip_cmd = f"python -m pip install pyserial 2>&1 | Select-Object -Last 3"
-    pip_output = await loop.run_in_executor(
-        None, mgr.ssh_execute, ssh_session_id,
-        pip_cmd, 30,
-    )
-    parts.append(f"[pip check] {pip_output.strip() or '(pyserial OK)'}")
-
     kill_cmd = (
         f"$pids = (netstat -ano | Select-String ':{telnet_port}.*LISTENING' | "
         f"ForEach-Object {{ ($_ -split '\\s+')[-1] }} | "
@@ -702,6 +692,8 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
         None, mgr.ssh_execute, ssh_session_id, kill_cmd, 10,
     )
     parts.append(f"[Kill previous] {kill_output.strip() if kill_output.strip() else '(none)'}")
+
+    await asyncio.sleep(1)
 
     launch_cmd = (
         f"Start-Process -WindowStyle Hidden -FilePath python "
@@ -718,13 +710,25 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
 
     await asyncio.sleep(2)
 
-    verify_cmd = (
-        f"netstat -ano | Select-String ':{telnet_port}.*LISTENING'"
+    netstat_ok = False
+    proc_ok = False
+
+    netstat_cmd = f"netstat -ano | Select-String ':{telnet_port}.*LISTENING'"
+    netstat_out = await loop.run_in_executor(
+        None, mgr.ssh_execute, ssh_session_id, netstat_cmd, 5,
     )
-    pid_check = await loop.run_in_executor(
-        None, mgr.ssh_execute, ssh_session_id, verify_cmd, 5,
+    netstat_ok = bool(netstat_out and netstat_out.strip())
+    parts.append(f"[Port check] {netstat_out.strip() if netstat_ok else '(port not listening)'}")
+
+    proc_cmd = "Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,ProcessName"
+    proc_out = await loop.run_in_executor(
+        None, mgr.ssh_execute, ssh_session_id, proc_cmd, 5,
     )
-    parts.append(f"[Process check] {pid_check.strip() if pid_check and pid_check.strip() else '(no output - may still be starting)'}")
+    proc_ok = bool(proc_out and proc_out.strip())
+    parts.append(f"[Process check] {proc_out.strip() if proc_ok else '(no python process)'}")
+
+    ok = netstat_ok or proc_ok
+    parts.append(f"[Result] {'OK (port=' + str(netstat_ok) + ' process=' + str(proc_ok) + ')' if ok else 'FAILED - port not listening and no python process found'}")
 
     session = mgr._ssh_sessions.get(ssh_session_id)
     host = session.params.host if session else "unknown"

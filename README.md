@@ -136,7 +136,7 @@ save_config → connections: [{...}]                 # 创建/更新配置条目
 |------|------|----------|
 | **Python >= 3.8** | 运行 com2telnet.py 串口转 TCP 服务 | [python.org](https://www.python.org/downloads/) 下载，**勾选 "Add Python to PATH"** |
 | **pip** | 安装 pyserial 依赖 | 随 Python 一同安装 |
-| **pyserial** | 串口通信库 | `setup_com2tcp` 自动 `pip install` |
+| **pyserial** | 串口通信库 | 需在远程 Windows PC 上预装（`pip install pyserial`） |
 | **防火墙放行** | Telnet 端口（如 5200）需入站放行 TCP | `setup_com2tcp` 执行时自动通过 SSH 放行，或手动配置 |
 
 安装 Python 后验证：
@@ -146,7 +146,7 @@ python --version
 pip --version
 ```
 
-`setup_com2tcp` 会自动上传 `com2telnet.py` + `pyproject.toml` 到 `D:\remote_debug\com2telnet\` 并安装依赖，无需手动操作。
+`setup_com2tcp` 会自动上传 `com2telnet.py` + `pyproject.toml` 到 `D:\remote_debug\com2telnet\`，无需手动操作。
 
 如果远程机器无 Python，可通过 SSH 自动下载安装：
 
