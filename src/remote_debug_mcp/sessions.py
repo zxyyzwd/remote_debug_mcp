@@ -112,6 +112,8 @@ class SessionManager:
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "PreferredAuthentications=password",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-p", str(params.port),
         ]
         if params.key_file:
