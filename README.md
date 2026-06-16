@@ -146,7 +146,7 @@ python --version
 pip --version
 ```
 
-`setup_com2tcp` 会自动上传 `com2telnet.py` + `pyproject.toml` 到 `D:\remote-debug\com2telnet\` 并安装依赖，无需手动操作。
+`setup_com2tcp` 会自动上传 `com2telnet.py` + `pyproject.toml` 到 `D:\remote_debug\com2telnet\` 并安装依赖，无需手动操作。
 
 如果远程机器无 Python，可通过 SSH 自动下载安装：
 

@@ -46,16 +46,17 @@ TOOLS = [
     ),
     Tool(
         name="ssh_execute",
-        description="Execute command on a connected SSH session. "
+        description="Execute a command on a connected SSH session. "
                     "Automatically adapts to Linux (bash) or Windows "
-                    "(PowerShell) remote shell. Triggers auto-reconnect "
-                    "if connection dropped.",
+                    "(PowerShell) remote shell. Uses echo-marker strategy "
+                    "for reliable output capture (not shell-prompt based). "
+                    "Triggers auto-reconnect if the connection has dropped.",
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "Session ID from ssh_connect",
+                    "description": "Session ID of your choice — reusing an existing ID will close and replace the old session",
                 },
                 "command": {
                     "type": "string",
@@ -83,8 +84,10 @@ TOOLS = [
     ),
     Tool(
         name="ssh_upload",
-        description="Upload file via SCP or SFTP. Automatically adapts "
-                    "path format for Linux/Windows targets.",
+        description="Upload a local file to the remote host via SCP "
+                    "(fallback to SFTP). Automatically adapts path format "
+                    "for Linux/Windows targets. After transfer, verifies "
+                    "file integrity by comparing local and remote MD5 checksums.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -97,8 +100,10 @@ TOOLS = [
     ),
     Tool(
         name="ssh_download",
-        description="Download file via SCP or SFTP. Automatically adapts "
-                    "path format for Linux/Windows targets.",
+        description="Download a file from the remote host via SCP "
+                    "(fallback to SFTP). Automatically adapts path format "
+                    "for Linux/Windows targets. After transfer, verifies "
+                    "file integrity by comparing local and remote MD5 checksums.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -111,7 +116,7 @@ TOOLS = [
     ),
     Tool(
         name="ssh_list",
-        description="List all active SSH sessions with platform and status.",
+        description="List all active SSH sessions with session_id, platform (linux/windows), and connection status.",
         inputSchema={"type": "object", "properties": {}},
     ),
     # ── Telnet ───────────────────────────────────────
@@ -144,15 +149,19 @@ TOOLS = [
     ),
     Tool(
         name="telnet_send",
-        description="Send data to a Telnet session. timeout=0: send and "
-                    "return immediately (no wait). timeout>0: send then "
-                    "wait for response. Supports auto-reconnect. "
-                    "Special values: __CTRL_C__, __CTRL_D__, __CTRL_Z__.",
+        description="Send data/command to a Telnet session. "
+                    "\\r (carriage return) is automatically appended — "
+                    "do NOT add \\r or \\n yourself. "
+                    "timeout=0: fire-and-forget (no response). "
+                    "timeout>0: wait for response (captured output returned). "
+                    "Supports auto-reconnect on connection loss. "
+                    "Special values: __CTRL_C__ (SIGINT), __CTRL_D__ (EOF), "
+                    "__CTRL_Z__ (SIGTSTP).",
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {"type": "string", "description": "Session ID"},
-                "data": {"type": "string", "description": "Data/command to send"},
+                "data": {"type": "string", "description": "Data/command to send (\\r auto-appended, do not add line endings)"},
                 "timeout": {
                     "type": "integer",
                     "description": "Wait timeout seconds. 0 = no wait (default), "
@@ -165,17 +174,18 @@ TOOLS = [
     ),
     Tool(
         name="telnet_listen",
-        description="Listen on a Telnet session for a specified duration, "
-                    "returning all newly received data (consumer pattern: "
-                    "data is consumed after read). Supports multiple encodings "
-                    "for binary data.",
+        description="Listen on a Telnet session for the given duration, "
+                    "returning all newly received data. "
+                    "Consumer pattern: read data is removed from the buffer "
+                    "and cannot be retrieved again — plan your reads accordingly. "
+                    "Supports multiple encodings for safe binary data transport.",
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {"type": "string", "description": "Session ID"},
                 "duration": {
                     "type": "integer",
-                    "description": "Listen duration seconds (default 10)",
+                    "description": "Listen duration in seconds (default 10, max 60 recommended)",
                     "default": 10,
                 },
                 "encoding": {
@@ -202,8 +212,8 @@ TOOLS = [
     ),
     Tool(
         name="telnet_list",
-        description="List all active Telnet sessions with status and "
-                    "buffer sizes.",
+        description="List all active Telnet sessions with session_id, "
+                    "connection status, buffer size, and monitor state.",
         inputSchema={"type": "object", "properties": {}},
     ),
     # ── Workflow ─────────────────────────────────────
@@ -211,7 +221,7 @@ TOOLS = [
         name="setup_com2tcp",
         description="Complete com2telnet deployment workflow:\n"
                     "1. SSH upload com2telnet.py + pyproject.toml to "
-                    "D:\\remote-debug\\com2telnet\\ on Windows PC\n"
+                    "D:\\remote_debug\\com2telnet\\ on Windows PC\n"
                     "2. Install com2telnet + dependencies (pyserial) via pip\n"
                     "3. Kill any previous com2telnet instance on the same port\n"
                     "4. Start com2telnet in background "
@@ -269,11 +279,13 @@ TOOLS = [
             "properties": {
                 "connections": {
                     "type": "array",
-                    "description": "Connections to save/merge. "
-                                  "type=ssh: {name, host, port, username, password, key_file?}. "
-                                  "type=com2tcp: {name, ssh, com_port, telnet_port, baud, "
-                                  "connect_timeout?, buffer_max_size?, max_retries?, username?, password?}. "
-                                  "Omit to save current in-memory config.",
+                    "description": "Array of connection objects to save/merge into config.yaml. "
+                                  "Each object must have 'name' and 'type' fields.\n\n"
+                                  "SSH example: "
+                                  '{"name":"my-pc","type":"ssh","host":"10.0.0.5","port":22,"username":"admin","password":"secret"}\n\n'
+                                  "com2tcp example: "
+                                  '{"name":"com2tcp_COM4_5200","type":"com2tcp","ssh":"my-pc","com_port":"COM4","telnet_port":5200,"baud":115200}\n\n'
+                                  "Omit 'connections' to save current in-memory config as-is.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -639,7 +651,7 @@ async def _setup_com2tcp(mgr, ssh_session_id: str, com_port: str,
         if not os.path.exists(f):
             return f"Required file not found: {f}"
 
-    remote_dir = "D:\\remote-debug\\com2telnet"
+    remote_dir = "D:\\remote_debug\\com2telnet"
     remote_com2telnet = f"{remote_dir}\\com2telnet.py"
     remote_pyproject = f"{remote_dir}\\pyproject.toml"
 
